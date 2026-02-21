@@ -2,29 +2,64 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 from PIL import Image
+import smtplib
+from email.message import EmailMessage
 
-# 1. Page Config
-st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
-
-# 2. YOUR GOOGLE SHEET LINK
+# 1. --- CONFIGURATION (FILL THESE IN) ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1zEWu2R2ryMDrMMAih1RfU5yBTdNA4uwpR_zcZZ4DXlc/gviz/tq?tqx=out:csv"
+
+# Your Gmail info
+SENDER_EMAIL = "your_email@gmail.com" 
+SENDER_PASSWORD = "your_16_digit_app_password" # Not your regular password!
+RECEIVER_EMAIL = "your_squad_leader@email.com" 
+
+# 2. --- NOTIFICATION LOGIC ---
+def send_email_notification(title, status, lat, lon):
+    msg = EmailMessage()
+    
+    # The actual email content
+    email_body = f"""
+    🚨 NEW ECO-PULSE ALERT REPORTED
+    
+    Issue: {title}
+    Status: {status}
+    Location: {lat}, {lon}
+    
+    Check the live map here: {st.query_params.get('app_url', 'Your Streamlit URL')}
+    """
+    
+    msg.set_content(email_body)
+    msg['Subject'] = f"🚨 {status} Alert: {title}"
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECEIVER_EMAIL
+
+    try:
+        # Connect to Google's Mail Server
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(SENDER_EMAIL, SENDER_PASSWORD)
+            smtp.send_message(msg)
+        return True
+    except Exception as e:
+        st.error(f"Mail Error: {e}")
+        return False
+
+# 3. --- DATA LOADING ---
+st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
 def load_data():
     try:
         df = pd.read_csv(SHEET_URL)
         df.columns = [c.strip() for c in df.columns]
-        # Force latitude and longitude to be numbers so the map doesn't break
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
-        return df.dropna(subset=['lat', 'lon']) # Remove any rows with missing coordinates
+        return df.dropna(subset=['lat', 'lon'])
     except:
         return pd.DataFrame(columns=["Alert_Name", "Status", "lat", "lon"])
 
-# Initialize Data
 if 'alerts_df' not in st.session_state:
     st.session_state.alerts_df = load_data()
 
-# 3. Sidebar with Reporting
+# 4. --- SIDEBAR FORM ---
 with st.sidebar:
     st.title("🚨 Report Alert")
     with st.form("alert_form", clear_on_submit=True):
@@ -34,27 +69,24 @@ with st.sidebar:
         new_lon = st.number_input("Longitude", value=-73.1212, format="%.4f")
         uploaded_file = st.file_uploader("Upload Evidence", type=['png', 'jpg', 'jpeg'])
         
-        if st.form_submit_button("Submit Alert"):
-            st.success("Alert added to this session!")
+        if st.form_submit_button("Submit & Notify"):
+            # This triggers the email
+            success = send_email_notification(new_name, new_status, new_lat, new_lon)
+            if success:
+                st.success(f"Email sent to {RECEIVER_EMAIL}!")
+            else:
+                st.warning("Alert added locally, but email failed. Check your App Password.")
 
-# 4. Main Dashboard UI
-st.title("🌍 Torrington Eco-Pulse")
+# 5. --- MAIN DASHBOARD ---
+st.title("🌍 TerraVax )
 
-# 5. Map View (The "Safety First" Version)
-view_state = pdk.ViewState(
-    latitude=41.8006, 
-    longitude=-73.1212, 
-    zoom=13, 
-    pitch=0
-)
-
-# We define the color directly here so the spreadsheet can't break it
+view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 layer = pdk.Layer(
     "ScatterplotLayer",
     st.session_state.alerts_df,
     get_position='[lon, lat]',
-    get_color=[255, 0, 0, 100], # Standard semi-transparent red
-    get_radius=250, 
+    get_color=[255, 0, 0, 100],
+    get_radius=250,
     pickable=True,
 )
 
@@ -65,18 +97,4 @@ st.pydeck_chart(pdk.Deck(
     tooltip={"text": "{Alert_Name}\nStatus: {Status}"}
 ))
 
-# 6. Evidence Gallery & Data Table
-st.markdown("---")
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.markdown("### Evidence Gallery")
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption=f"Evidence: {new_name}", use_container_width=True)
-    else:
-        st.info("Upload a photo in the sidebar to see it here.")
-
-with col2:
-    st.markdown("### Active Data")
-    st.dataframe(st.session_state.alerts_df)
+st.dataframe(st.session_state.alerts_df)
