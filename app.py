@@ -62,13 +62,9 @@ if 'alerts_df' not in st.session_state:
 if 'chat_df' not in st.session_state:
     st.session_state.chat_df = load_chat()
 
-# Persistent Map State
+# Standard View State
 if 'map_view' not in st.session_state:
     st.session_state.map_view = {"latitude": 41.8006, "longitude": -73.1212, "zoom": 13}
-
-# Clicked Coordinate State
-if 'clicked_coords' not in st.session_state:
-    st.session_state.clicked_coords = {"lat": 41.8006, "lon": -73.1212}
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
@@ -93,20 +89,20 @@ with st.sidebar:
 
     with tab2:
         st.subheader("New Alert")
-        st.caption("Tip: Click anywhere on the map to set the location!")
+        st.info("The form uses the center of your map for the location.")
         with st.form("alert_form", clear_on_submit=True):
-            n_name = st.text_input("Issue Title (e.g., Pothole on Main St)")
+            n_name = st.text_input("Issue Title")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
             
-            # These now default to whatever the user clicked on the map
-            n_lat = st.number_input("Lat", value=float(st.session_state.clicked_coords["lat"]), format="%.5f")
-            n_lon = st.number_input("Lon", value=float(st.session_state.clicked_coords["lon"]), format="%.5f")
+            # Using current session state map center
+            n_lat = st.number_input("Lat", value=float(st.session_state.map_view["latitude"]), format="%.5f")
+            n_lon = st.number_input("Lon", value=float(st.session_state.map_view["longitude"]), format="%.5f")
             
             n_rad = st.slider("Alert Radius (Meters)", 50, 1000, 250)
             if st.form_submit_button("Submit Alert"):
                 worksheet.append_row([n_name, n_stat, n_lat, n_lon, n_rad])
                 st.session_state.alerts_df = load_data()
-                st.success("Alert Saved to Map!")
+                st.success("Alert Saved!")
                 st.rerun()
 
 # --- 5. MAIN UI ---
@@ -120,9 +116,9 @@ if not df_map.empty and sel_stat != "All":
 c1, c2 = st.columns([3, 1])
 
 with c1:
+    # Build the map
     view_state = pdk.ViewState(**st.session_state.map_view)
     
-    # Existing alerts layer
     layer = pdk.Layer(
         "ScatterplotLayer", df_map,
         get_position='[lon, lat]',
@@ -130,31 +126,16 @@ with c1:
         get_radius="radius",
         pickable=True,
     )
-    
-    # Optional: Red dot showing where you clicked
-    click_layer = pdk.Layer(
-        "ScatterplotLayer",
-        pd.DataFrame([st.session_state.clicked_coords]),
-        get_position='[lon, lat]',
-        get_color=[255, 0, 0, 200],
-        get_radius=50,
-    )
 
     r = pdk.Deck(
         map_style='light',
         initial_view_state=view_state,
-        layers=[layer, click_layer],
+        layers=[layer],
         tooltip={"text": "{display_name}\nStatus: {display_status}"}
     )
 
-    # Capture click data
-    event = st.pydeck_chart(r, on_select="rerun", selection_mode="single-click")
-    
-    # If the user clicked the map, update the coordinates in the sidebar
-    if event and "coordinate" in event:
-        st.session_state.clicked_coords["lon"] = event["coordinate"][0]
-        st.session_state.clicked_coords["lat"] = event["coordinate"][1]
-        st.rerun()
+    # Simplified chart call to avoid the API Exception
+    st.pydeck_chart(r)
 
 with c2:
     st.subheader("📍 Recent Alerts")
@@ -164,7 +145,7 @@ with c2:
             clr = "#D32F2F" if s == "Urgent" else "#EF6C00" if s == "Active" else "#FBC02D" if s == "Watching" else "#2E7D32"
             st.markdown(f"""
                 <div style="border-left: 6px solid {clr}; padding: 12px; background-color: #fcfcfc; border: 1px solid #eeeeee; border-radius: 8px; margin-bottom: 15px;">
-                    <h4 style="margin:0; color: #111111;">{row['display_name']}</h4>
+                    <h4 style="margin:0; color: #111111; font-size: 16px;">{row['display_name']}</h4>
                     <p style="margin: 5px 0 0 0; color: #333333; font-size: 14px;">Status: <b style="color: {clr};">{s}</b></p>
                 </div>
             """, unsafe_allow_html=True)
