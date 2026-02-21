@@ -69,7 +69,7 @@ with st.sidebar:
                 st.success(f"Success! Squad notified. (Radius set to {new_radius}m)")
 
 # 5. --- MAP ---
-st.title("🌍 TerraVax")
+st.title("🌍 Torrington Eco-Pulse")
 view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 
 layer = pdk.Layer(
