@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 from PIL import Image
-import base64
-from io import BytesIO
 
+# 1. Page Config
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
-# Link to your Google Sheet
+# 2. YOUR GOOGLE SHEET LINK
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1zEWu2R2ryMDrMMAih1RfU5yBTdNA4uwpR_zcZZ4DXlc/gviz/tq?tqx=out:csv"
 
 def load_data():
@@ -18,10 +17,11 @@ def load_data():
     except:
         return pd.DataFrame(columns=["Alert_Name", "Status", "lat", "lon", "color", "radius"])
 
+# Initialize Data
 if 'alerts_df' not in st.session_state:
     st.session_state.alerts_df = load_data()
 
-# --- SIDEBAR WITH PHOTO UPLOAD ---
+# 3. Sidebar with Reporting & Photo Upload
 with st.sidebar:
     st.title("🚨 Report Alert")
     with st.form("alert_form", clear_on_submit=True):
@@ -30,25 +30,45 @@ with st.sidebar:
         new_lat = st.number_input("Latitude", value=41.8006, format="%.4f")
         new_lon = st.number_input("Longitude", value=-73.1212, format="%.4f")
         
-        # PHOTO UPLOADER COMPONENT
+        # CAMERA/FILE UPLOADER
         uploaded_file = st.file_uploader("Upload Evidence (Photo)", type=['png', 'jpg', 'jpeg'])
         
         if st.form_submit_button("Submit Alert"):
-            # This adds it to the current view (Persistence comes next!)
-            st.success("Photo attached and alert synced!")
+            st.success("Alert synced to local session!")
 
-# --- MAIN DASHBOARD ---
+# 4. Main Dashboard UI
 st.title("🌍 Torrington Eco-Pulse")
 
-# Show the Map
-view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=12, pitch=45)
-layer = pdk.Layer("ScatterplotLayer", st.session_state.alerts_df, get_position='[lon, lat]', get_color=[255,0,0,150], get_radius=500, pickable=True)
-st.pydeck_chart(pdk.Deck(map_style='mapbox://styles/mapbox/dark-v10', initial_view_state=view_state, layers=[layer]))
+# 5. Map View (Fixed Background)
+view_state = pdk.ViewState(
+    latitude=41.8006, 
+    longitude=-73.1212, 
+    zoom=12, 
+    pitch=0
+)
 
-# --- SHOW PHOTO IN CARDS ---
-st.markdown("### Evidence Gallery")
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption=f"Latest Evidence for: {new_name}", use_container_width=True)
-else:
-    st.info("No photos uploaded for this session yet.")
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    st.session_state.alerts_df,
+    get_position='[lon, lat]',
+    get_color=[255, 0, 0, 160], # Bright Red circles
+    get_radius=200,
+    pickable=True,
+)
+
+st.pydeck_chart(pdk.Deck(
+    map_style='light', # Changed from dark-v10 to light to ensure streets show
+    initial_view_state=view_state,
+    layers=[layer],
+    tooltip={"text": "{Alert_Name}\nStatus: {Status}"}
+))
+
+# 6. Evidence Gallery & Data Table
+st.markdown("---")
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.markdown("### Evidence Gallery")
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption
