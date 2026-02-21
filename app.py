@@ -20,7 +20,7 @@ def get_status_color(status):
     colors = {
         "Urgent": [255, 0, 0, 160],
         "Active": [255, 165, 0, 160],
-        "Watching": [255, 255, 0, 160],
+        "Watching": [255, 215, 0, 160], # Gold instead of bright yellow
         "Resolved": [0, 128, 0, 160]
     }
     return colors.get(str(status).strip(), [125, 125, 125, 160])
@@ -34,10 +34,9 @@ def load_data():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         
-        # Standardize column names (lowercase and no spaces)
+        # Standardize column names
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
         
-        # Mapping variations to internal names
         name_col = next((c for c in df.columns if 'name' in c), 'alert_name')
         stat_col = next((c for c in df.columns if 'stat' in c), 'status')
         
@@ -45,7 +44,6 @@ def load_data():
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
         df = df.dropna(subset=['lat', 'lon'])
         
-        # Create display columns
         df['display_name'] = df[name_col]
         df['display_status'] = df[stat_col]
         df['color'] = df['display_status'].apply(get_status_color)
@@ -104,13 +102,18 @@ with c1:
 with c2:
     st.subheader("📍 Recent Alerts")
     if not df_map.empty:
+        # Show last 10 alerts
         for _, row in df_map.iloc[::-1].head(10).iterrows():
             s = row['display_status']
-            clr = "#FF4B4B" if s == "Urgent" else "#FFA500" if s == "Active" else "#FFE119" if s == "Watching" else "#00CC96"
+            # Card border color
+            clr = "#D32F2F" if s == "Urgent" else "#EF6C00" if s == "Active" else "#FBC02D" if s == "Watching" else "#2E7D32"
+            
+            # Stylized Card with high-contrast text
             st.markdown(f"""
-                <div style="border-left: 5px solid {clr}; padding: 10px; background-color: #f0f2f6; border-radius: 8px; margin-bottom: 12px;">
-                    <strong style="font-size: 15px;">{row['display_name']}</strong><br>
-                    <span style="font-size: 12px;">Status: <b>{s}</b> | {row['radius']}m</span>
+                <div style="border-left: 6px solid {clr}; padding: 12px; background-color: #fcfcfc; border: 1px solid #eeeeee; border-left: 6px solid {clr}; border-radius: 8px; margin-bottom: 15px; box-shadow: 1px 1px 3px rgba(0,0,0,0.1);">
+                    <h4 style="margin:0; color: #111111; font-weight: 700;">{row['display_name']}</h4>
+                    <p style="margin: 5px 0 0 0; color: #333333; font-size: 14px;">Status: <b style="color: {clr};">{s}</b></p>
+                    <p style="margin: 0; color: #666666; font-size: 12px;">Range: {row['radius']}m</p>
                 </div>
             """, unsafe_allow_html=True)
     else:
