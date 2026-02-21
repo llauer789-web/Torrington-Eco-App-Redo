@@ -51,13 +51,13 @@ layer = pdk.Layer(
     "ScatterplotLayer",
     st.session_state.alerts_df,
     get_position='[lon, lat]',
-    get_color=[255, 0, 0, 160], # Bright Red circles
+    get_color=[255, 0, 0, 160], 
     get_radius=200,
     pickable=True,
 )
 
 st.pydeck_chart(pdk.Deck(
-    map_style='light', # Changed from dark-v10 to light to ensure streets show
+    map_style='light', 
     initial_view_state=view_state,
     layers=[layer],
     tooltip={"text": "{Alert_Name}\nStatus: {Status}"}
@@ -71,4 +71,10 @@ with col1:
     st.markdown("### Evidence Gallery")
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
-        st.image(image, caption
+        st.image(image, caption=f"Evidence: {new_name}", use_container_width=True)
+    else:
+        st.info("Upload a photo in the sidebar to see it here.")
+
+with col2:
+    st.markdown("### Active Data")
+    st.dataframe(st.session_state.alerts_df)
