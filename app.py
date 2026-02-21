@@ -78,7 +78,7 @@ with st.sidebar:
                 st.warning("Alert added locally, but email failed. Check your App Password.")
 
 # 5. --- MAIN DASHBOARD ---
-st.title("🌍 TerraVax )
+st.title("🌍 Torrington Eco-Pulse")
 
 view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 layer = pdk.Layer(
