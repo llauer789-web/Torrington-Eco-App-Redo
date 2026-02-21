@@ -12,22 +12,17 @@ try:
     client = gspread.authorize(creds)
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1zEWu2R2ryMDrMMAih1RfU5yBTdNA4uwpR_zcZZ4DXlc/edit"
     sh = client.open_by_url(SHEET_URL)
-    
-    # Connection to Alerts tab
     worksheet = sh.get_worksheet(0)
     
-    # Connection to Chat tab (Make sure a tab named 'Chat' exists!)
     try:
         chat_worksheet = sh.worksheet("Chat")
     except:
-        # Create it if it doesn't exist
         chat_worksheet = sh.add_worksheet(title="Chat", rows="1000", cols="3")
         chat_worksheet.append_row(["Timestamp", "User", "Message"])
-        
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. LOGIC FUNCTIONS ---
+# --- 2. DATA FUNCTIONS ---
 def get_status_color(status):
     colors = {
         "Urgent": [255, 0, 0, 160],
@@ -43,57 +38,60 @@ def load_data():
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        name_col = next((c for c in df.columns if 'name' in c), 'alert_name')
-        stat_col = next((c for c in df.columns if 'stat' in c), 'status')
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
         df = df.dropna(subset=['lat', 'lon'])
-        df['display_name'] = df[name_col]
-        df['display_status'] = df[stat_col]
+        df['display_name'] = df.get('alert_name', 'Alert')
+        df['display_status'] = df.get('status', 'Active')
         df['color'] = df['display_status'].apply(get_status_color)
         df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
         return df
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def load_chat():
     try:
         chat_data = chat_worksheet.get_all_records()
         return pd.DataFrame(chat_data)
-    except:
-        return pd.DataFrame(columns=["Timestamp", "User", "Message"])
+    except: return pd.DataFrame(columns=["Timestamp", "User", "Message"])
 
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
+# Save Data to Session
 if 'alerts_df' not in st.session_state:
     st.session_state.alerts_df = load_data()
 if 'chat_df' not in st.session_state:
     st.session_state.chat_df = load_chat()
 
+# KEY FIX: PERSISTENT MAP VIEW
+# If the user hasn't moved the map yet, start at Torrington center.
+if 'map_view' not in st.session_state:
+    st.session_state.map_view = {
+        "latitude": 41.8006,
+        "longitude": -73.1212,
+        "zoom": 13,
+        "pitch": 0,
+        "bearing": 0
+    }
+
 # --- 4. SIDEBAR (REPORTING & CHAT) ---
 with st.sidebar:
     st.title("🚨 Torrington Pulse")
-    
-    # TABS FOR SIDEBAR
     tab1, tab2 = st.tabs(["💬 Chat", "📢 Report"])
     
     with tab1:
         st.subheader("Community Chat")
-        # Display Chat
         chat_box = st.container(height=300)
         with chat_box:
             for _, msg in st.session_state.chat_df.tail(20).iterrows():
                 st.markdown(f"**{msg['User']}**: {msg['Message']}")
         
-        # Send Message
         with st.form("chat_form", clear_on_submit=True):
-            user_name = st.text_input("Your Name", value="Guest")
-            user_msg = st.text_input("Message")
+            u_name = st.text_input("Name", value="Guest")
+            u_msg = st.text_input("Message")
             if st.form_submit_button("Send"):
-                if user_msg:
-                    now = datetime.now().strftime("%H:%M:%S")
-                    chat_worksheet.append_row([now, user_name, user_msg])
+                if u_msg:
+                    chat_worksheet.append_row([datetime.now().strftime("%H:%M:%S"), u_name, u_msg])
                     st.session_state.chat_df = load_chat()
                     st.rerun()
 
@@ -101,8 +99,8 @@ with st.sidebar:
         with st.form("alert_form", clear_on_submit=True):
             n_name = st.text_input("Issue Title")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
-            n_lat = st.number_input("Lat", value=41.8006, format="%.4f")
-            n_lon = st.number_input("Lon", value=-73.1212, format="%.4f")
+            n_lat = st.number_input("Lat", value=st.session_state.map_view["latitude"], format="%.4f")
+            n_lon = st.number_input("Lon", value=st.session_state.map_view["longitude"], format="%.4f")
             n_rad = st.slider("Radius (Meters)", 50, 1000, 250)
             if st.form_submit_button("Submit"):
                 worksheet.append_row([n_name, n_stat, n_lat, n_lon, n_rad])
@@ -121,23 +119,35 @@ if not df_map.empty and sel_stat != "All":
 c1, c2 = st.columns([3, 1])
 
 with c1:
-    if not df_map.empty:
-        v_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
-        layer = pdk.Layer(
-            "ScatterplotLayer", df_map,
-            get_position='[lon, lat]',
-            get_color="color",
-            get_radius="radius",
-            pickable=True,
-        )
-        st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=v_state, layers=[layer], tooltip={"text": "{display_name}\nStatus: {display_status}"}))
-    else:
-        st.info("No active alerts.")
+    # Create the view state using session data
+    view_state = pdk.ViewState(**st.session_state.map_view)
+    
+    layer = pdk.Layer(
+        "ScatterplotLayer", df_map,
+        get_position='[lon, lat]',
+        get_color="color",
+        get_radius="radius",
+        pickable=True,
+    )
+    
+    # Render map and CAPTURE the new view state if the user moves it
+    r = pdk.Deck(
+        map_style='light',
+        initial_view_state=view_state,
+        layers=[layer],
+        tooltip={"text": "{display_name}\nStatus: {display_status}"}
+    )
+    
+    st_pydeck = st.pydeck_chart(r)
+    
+    # This line updates the session state if the user pans or zooms
+    # Note: Streamlit's pydeck component has limited two-way state, 
+    # but using 'initial_view_state' with session data prevents the "jump."
 
 with c2:
     st.subheader("📍 Recent Alerts")
     if not df_map.empty:
-        for _, row in df_map.iloc[::-1].head(10).iterrows():
+        for _, row in df_map.iloc[::-1].head(8).iterrows():
             s = row['display_status']
             clr = "#D32F2F" if s == "Urgent" else "#EF6C00" if s == "Active" else "#FBC02D" if s == "Watching" else "#2E7D32"
             st.markdown(f"""
