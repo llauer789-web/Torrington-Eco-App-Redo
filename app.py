@@ -57,24 +57,20 @@ def load_chat():
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
-# Save Data to Session
 if 'alerts_df' not in st.session_state:
     st.session_state.alerts_df = load_data()
 if 'chat_df' not in st.session_state:
     st.session_state.chat_df = load_chat()
 
-# KEY FIX: PERSISTENT MAP VIEW
-# If the user hasn't moved the map yet, start at Torrington center.
+# Persistent Map State
 if 'map_view' not in st.session_state:
-    st.session_state.map_view = {
-        "latitude": 41.8006,
-        "longitude": -73.1212,
-        "zoom": 13,
-        "pitch": 0,
-        "bearing": 0
-    }
+    st.session_state.map_view = {"latitude": 41.8006, "longitude": -73.1212, "zoom": 13}
 
-# --- 4. SIDEBAR (REPORTING & CHAT) ---
+# Clicked Coordinate State
+if 'clicked_coords' not in st.session_state:
+    st.session_state.clicked_coords = {"lat": 41.8006, "lon": -73.1212}
+
+# --- 4. SIDEBAR ---
 with st.sidebar:
     st.title("🚨 Torrington Pulse")
     tab1, tab2 = st.tabs(["💬 Chat", "📢 Report"])
@@ -96,32 +92,37 @@ with st.sidebar:
                     st.rerun()
 
     with tab2:
+        st.subheader("New Alert")
+        st.caption("Tip: Click anywhere on the map to set the location!")
         with st.form("alert_form", clear_on_submit=True):
-            n_name = st.text_input("Issue Title")
+            n_name = st.text_input("Issue Title (e.g., Pothole on Main St)")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
-            n_lat = st.number_input("Lat", value=st.session_state.map_view["latitude"], format="%.4f")
-            n_lon = st.number_input("Lon", value=st.session_state.map_view["longitude"], format="%.4f")
-            n_rad = st.slider("Radius (Meters)", 50, 1000, 250)
-            if st.form_submit_button("Submit"):
+            
+            # These now default to whatever the user clicked on the map
+            n_lat = st.number_input("Lat", value=float(st.session_state.clicked_coords["lat"]), format="%.5f")
+            n_lon = st.number_input("Lon", value=float(st.session_state.clicked_coords["lon"]), format="%.5f")
+            
+            n_rad = st.slider("Alert Radius (Meters)", 50, 1000, 250)
+            if st.form_submit_button("Submit Alert"):
                 worksheet.append_row([n_name, n_stat, n_lat, n_lon, n_rad])
                 st.session_state.alerts_df = load_data()
-                st.success("Saved!")
+                st.success("Alert Saved to Map!")
                 st.rerun()
 
 # --- 5. MAIN UI ---
 st.title("🌍 Eco-Pulse Live Map")
-sel_stat = st.selectbox("Filter Map:", ["All", "Urgent", "Active", "Watching", "Resolved"])
 
 df_map = st.session_state.alerts_df
+sel_stat = st.selectbox("Filter Map:", ["All", "Urgent", "Active", "Watching", "Resolved"])
 if not df_map.empty and sel_stat != "All":
     df_map = df_map[df_map['display_status'] == sel_stat]
 
 c1, c2 = st.columns([3, 1])
 
 with c1:
-    # Create the view state using session data
     view_state = pdk.ViewState(**st.session_state.map_view)
     
+    # Existing alerts layer
     layer = pdk.Layer(
         "ScatterplotLayer", df_map,
         get_position='[lon, lat]',
@@ -130,19 +131,30 @@ with c1:
         pickable=True,
     )
     
-    # Render map and CAPTURE the new view state if the user moves it
+    # Optional: Red dot showing where you clicked
+    click_layer = pdk.Layer(
+        "ScatterplotLayer",
+        pd.DataFrame([st.session_state.clicked_coords]),
+        get_position='[lon, lat]',
+        get_color=[255, 0, 0, 200],
+        get_radius=50,
+    )
+
     r = pdk.Deck(
         map_style='light',
         initial_view_state=view_state,
-        layers=[layer],
+        layers=[layer, click_layer],
         tooltip={"text": "{display_name}\nStatus: {display_status}"}
     )
+
+    # Capture click data
+    event = st.pydeck_chart(r, on_select="rerun", selection_mode="single-click")
     
-    st_pydeck = st.pydeck_chart(r)
-    
-    # This line updates the session state if the user pans or zooms
-    # Note: Streamlit's pydeck component has limited two-way state, 
-    # but using 'initial_view_state' with session data prevents the "jump."
+    # If the user clicked the map, update the coordinates in the sidebar
+    if event and "coordinate" in event:
+        st.session_state.clicked_coords["lon"] = event["coordinate"][0]
+        st.session_state.clicked_coords["lat"] = event["coordinate"][1]
+        st.rerun()
 
 with c2:
     st.subheader("📍 Recent Alerts")
