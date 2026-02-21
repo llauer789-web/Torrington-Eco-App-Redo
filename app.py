@@ -39,11 +39,11 @@ with st.sidebar:
 # 4. Main Dashboard UI
 st.title("🌍 Torrington Eco-Pulse")
 
-# 5. Map View (Fixed Background)
+# 5. Map View (Fixed Background & Translucency)
 view_state = pdk.ViewState(
     latitude=41.8006, 
     longitude=-73.1212, 
-    zoom=12, 
+    zoom=13, # Zoomed in slightly more for detail
     pitch=0
 )
 
@@ -51,8 +51,9 @@ layer = pdk.Layer(
     "ScatterplotLayer",
     st.session_state.alerts_df,
     get_position='[lon, lat]',
-    get_color=[255, 0, 0, 160], 
-    get_radius=200,
+    # [Red, Green, Blue, Alpha] - 100 is see-through
+    get_color=[255, 0, 0, 100], 
+    get_radius=250, 
     pickable=True,
 )
 
@@ -77,4 +78,4 @@ with col1:
 
 with col2:
     st.markdown("### Active Data")
-    st.dataframe(st.session_state.alerts_df)
+    st.dataframe(st.session_state.alerts_
