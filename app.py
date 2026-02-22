@@ -7,7 +7,7 @@ from datetime import datetime
 from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="torrington_eco_pulse")
+geolocator = Nominatim(user_agent="localsignal_pulse") # Updated agent name
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -20,7 +20,7 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. THE COLOR SYSTEM (Fixed for Clarity) ---
+# --- 2. THE COLOR SYSTEM (Keeping your vibrant styles) ---
 def get_status_styles(status):
     status = str(status).strip().capitalize()
     styles = {
@@ -37,38 +37,33 @@ def load_data():
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        
-        # Ensure coordinates and size (radius) are numeric
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
         df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
-        
-        # Map styles
         df['map_color'] = df['status'].apply(lambda x: get_status_styles(x)['map'])
         return df
     except: return pd.DataFrame()
 
 # --- 4. INITIALIZATION ---
-st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
+st.set_page_config(page_title="LocalSignal", layout="wide") # Updated Page Title
 if 'map_center' not in st.session_state:
     st.session_state.map_center = {"lat": 41.8006, "lon": -73.1212}
 
-# --- 5. SIDEBAR ---
+# --- 5. SIDEBAR (LocalSignal Sidebar) ---
 with st.sidebar:
-    st.title("🚨 Torrington Pulse")
+    st.title("📡 LocalSignal") # Updated Branding
     tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
 
     with tab1:
-        st.subheader("New Report")
+        st.subheader("New Signal") # Updated Context
         with st.form("report_form", clear_on_submit=True):
-            n_name = st.text_input("What's happening?", placeholder="e.g. Flooded Street")
-            n_street = st.text_input("Address/Street Name", placeholder="e.g. 50 Main St")
-            n_stat = st.selectbox("Urgency Level", ["Urgent", "Active", "Watching", "Resolved"])
-            n_size = st.select_slider("Size of Area (Radius)", options=[50, 100, 250, 500, 1000], value=250)
+            n_name = st.text_input("Signal Name", placeholder="e.g. Fallen Tree")
+            n_street = st.text_input("Address/Street", placeholder="e.g. 50 Main St")
+            n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
+            n_size = st.select_slider("Signal Radius", options=[50, 100, 250, 500, 1000], value=250)
             
-            if st.form_submit_button("Submit Alert"):
+            if st.form_submit_button("Send Signal"): # Updated Button Text
                 try:
-                    # Attempt to find location via street name
                     location = geolocator.geocode(f"{n_street}, Torrington, CT")
                     f_lat = location.latitude if location else st.session_state.map_center["lat"]
                     f_lon = location.longitude if location else st.session_state.map_center["lon"]
@@ -76,23 +71,21 @@ with st.sidebar:
                     f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
 
                 t_stamp = datetime.now().strftime("%I:%M %p")
-                # Add to Sheet: Name, Status, Lat, Lon, Radius, Street, Time
                 worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp])
-                st.success("Reported!")
+                st.success("Signal Sent!")
                 st.rerun()
 
     with tab2:
-        # Chat Logic
+        st.subheader("Community Chat")
         u_msg = st.text_input("Message")
-        if st.button("Send"):
+        if st.button("Send Message"):
             chat_worksheet.append_row([datetime.now().strftime("%H:%M"), "Guest", u_msg])
             st.rerun()
 
-# --- 6. MAIN MAP ---
-st.title("🌍 Eco-Pulse Live Map")
+# --- 6. MAIN UI ---
+st.title("🌍 LocalSignal Live Map") # Updated Main Header
 df_map = load_data()
 
-# Render the Map
 view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 layer = pdk.Layer(
     "ScatterplotLayer", df_map,
@@ -104,9 +97,9 @@ layer = pdk.Layer(
 
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer], tooltip={"text": "{alert_name}\nStatus: {status}"}))
 
-# --- 7. RECENT ALERTS (The "Better" State) ---
+# --- 7. RECENT ALERTS ---
 st.divider()
-st.subheader("📍 Recent Activity")
+st.subheader("📍 Recent Signals") # Updated Header
 
 if not df_map.empty:
     recent_items = df_map.iloc[::-1].head(4)
