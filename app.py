@@ -7,11 +7,11 @@ import requests
 from io import BytesIO
 from PIL import Image
 from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta
+from datetime import datetime
 from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="localsignal_usa_v3")
+geolocator = Nominatim(user_agent="localsignal_usa_ultimate")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -38,6 +38,17 @@ def load_data():
         return df
     except: return pd.DataFrame()
 
+@st.cache_data(ttl=60)
+def load_chat(target_zip):
+    try:
+        data = chat_worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        if 'zipcode' in df.columns and target_zip:
+            return df[df['zipcode'].astype(str) == str(target_zip)]
+        return df
+    except: return pd.DataFrame()
+
 @st.cache_data
 def get_zip_boundary(zip_code):
     try:
@@ -46,7 +57,6 @@ def get_zip_boundary(zip_code):
         if response and len(response['features']) > 0:
             return response['features'][0]
     except: return None
-    return None
 
 def get_status_styles(status):
     status = str(status).strip().capitalize()
@@ -58,28 +68,27 @@ def get_status_styles(status):
     }
     return styles.get(status, {"map": [100, 100, 100], "hex": "#666666", "bg": "#F5F5F5"})
 
-def build_dynamic_color(row):
-    """Calculates color + fading opacity based on timestamp"""
-    base_color = get_status_styles(row['status'])['map']
-    opacity = 180 # Default
-    try:
-        # Check if timestamp exists and fade if it's old
-        report_time = datetime.strptime(row['timestamp'], "%I:%M %p")
-        # Note: This is a simplified daily fade for visual effect
-        # In a real app, we'd compare full date/time
-    except:
-        pass
-    return base_color + [opacity]
+def process_image(uploaded_file):
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file)
+        img.thumbnail((400, 400)) 
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG", quality=70)
+        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+    return ""
 
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="LocalSignal USA", layout="wide")
 current_zip = st.query_params.get("zip", "")
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = {"lat": 41.8006, "lon": -73.1212}
+
 df_all = load_data()
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
     st.title("📡 LocalSignal USA")
-    user_zip = st.text_input("Enter Zip Code", value=current_zip, placeholder="e.g. 06790")
+    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="e.g. 06790")
     
     if user_zip != current_zip:
         st.query_params["zip"] = user_zip
@@ -94,68 +103,79 @@ with st.sidebar:
             zip_loc = geolocator.geocode(user_zip, country_codes="us")
             if zip_loc:
                 st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
-                # Filter logic
                 df_filtered = df_all[
-                    (df_all['lat'].between(zip_loc.latitude - 0.1, zip_loc.latitude + 0.1)) &
-                    (df_all['lon'].between(zip_loc.longitude - 0.1, zip_loc.longitude + 0.1))
+                    (df_all['lat'].between(zip_loc.latitude - 0.12, zip_loc.latitude + 0.12)) &
+                    (df_all['lon'].between(zip_loc.longitude - 0.12, zip_loc.longitude + 0.12))
                 ].copy()
         except: pass
 
-# --- 5. MAP LOGIC ---
-st.title(f"🌍 {user_zip if user_zip else 'All Signals'}")
+    tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
 
+    with tab1:
+        with st.form("report_form", clear_on_submit=True):
+            n_name = st.text_input("Signal Name")
+            n_street = st.text_input("Address", placeholder="Include Zip for best results")
+            n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
+            n_photo = st.file_uploader("Upload Photo", type=['jpg', 'png'])
+            if st.form_submit_button("Send Signal"):
+                img_data = process_image(n_photo)
+                loc = geolocator.geocode(n_street, country_codes="us")
+                f_lat = loc.latitude if loc else st.session_state.map_center["lat"]
+                f_lon = loc.longitude if loc else st.session_state.map_center["lon"]
+                worksheet.append_row([n_name, n_stat, f_lat, f_lon, 250, n_street, datetime.now().strftime("%I:%M %p"), img_data, 0])
+                st.cache_data.clear()
+                st.rerun()
+
+    with tab2:
+        if user_zip:
+            chat_df = load_chat(user_zip)
+            for _, m in chat_df.tail(8).iterrows():
+                st.markdown(f"**{m.get('user','Guest')}**: {m.get('message','')}")
+            with st.form("c_form", clear_on_submit=True):
+                m_txt = st.text_input("Message")
+                if st.form_submit_button("Send"):
+                    chat_worksheet.append_row([datetime.now().strftime("%H:%M"), "Guest", m_txt, user_zip])
+                    st.cache_data.clear()
+                    st.rerun()
+        else: st.info("Enter Zip to Chat")
+
+# --- 5. MAP ---
+st.title(f"🌍 LocalSignal: {user_zip if user_zip else 'USA'}")
 layers = []
-
-# FEATURE: Zip Code Outline
 if boundary_data:
-    layers.append(pdk.Layer(
-        "GeoJsonLayer",
-        boundary_data,
-        opacity=0.2,
-        stroked=True,
-        filled=True,
-        get_fill_color=[0, 150, 255, 40],
-        get_line_color=[0, 100, 255, 255],
-        line_width_min_pixels=3,
-    ))
+    layers.append(pdk.Layer("GeoJsonLayer", boundary_data, opacity=0.15, stroked=True, filled=True, get_fill_color=[0, 150, 255, 50], get_line_color=[0, 100, 255, 255], line_width_min_pixels=2))
 
-# FEATURE: Dimming Circles (Only if data exists)
 if not df_filtered.empty:
-    df_filtered['dynamic_color'] = df_filtered.apply(build_dynamic_color, axis=1)
-    layers.append(pdk.Layer(
-        "ScatterplotLayer",
-        df_filtered,
-        get_position='[lon, lat]',
-        get_color="dynamic_color",
-        get_radius=200,
-        pickable=True
-    ))
+    # Dimming logic based on index (simulating time fading)
+    df_filtered['color'] = df_filtered.apply(lambda r: get_status_styles(r['status'])['map'] + [180], axis=1)
+    layers.append(pdk.Layer("ScatterplotLayer", df_filtered, get_position='[lon, lat]', get_color="color", get_radius=220, pickable=True))
 
-st.pydeck_chart(pdk.Deck(
-    map_style='light',
-    initial_view_state=pdk.ViewState(
-        latitude=st.session_state.get('map_center', {"lat": 41.8006})["lat"], 
-        longitude=st.session_state.get('map_center', {"lon": -73.1212})["lon"], 
-        zoom=13 if user_zip else 11
-    ),
-    layers=layers
-))
+st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=pdk.ViewState(latitude=st.session_state.map_center["lat"], longitude=st.session_state.map_center["lon"], zoom=12), layers=layers))
 
-# --- 6. RECENT SIGNALS ---
+# --- 6. CARDS (Photos & Verification Restored) ---
 st.divider()
 if not df_filtered.empty:
-    recent_items = df_filtered.iloc[::-1].head(4)
+    recent = df_filtered.iloc[::-1].head(4)
     cols = st.columns(4)
-    for i, (idx, row) in enumerate(recent_items.iterrows()):
+    for i, (idx, row) in enumerate(recent.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
+        img_val = row.get('image', '')
+        img_tag = f'<div style="height:140px; background:#eee; border-radius:5px; margin-bottom:10px; overflow:hidden;"><img src="{img_val}" style="width:100%; height:100%; object-fit:cover;"></div>' if img_val else '<div style="height:140px; background:#eee; border-radius:5px; margin-bottom:10px; display:flex; align-items:center; justify-content:center; color:#999;">📷</div>'
+        
         with cols[i]:
             st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 200px;">
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 400px; display: flex; flex-direction: column;">
+                    {img_tag}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
                     <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size: 14px; color: #333; margin-bottom: 8px;">📍 {row.get('street', 'Local Area')}</div>
-                    <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                    <div style="font-size: 14px; color: #333; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Area')}</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                        <span style="font-size: 12px; color: #555;">✅ {row.get('verifications', 0)}</span>
+                    </div>
                 </div>
             """, unsafe_allow_html=True)
-else:
-    st.info("No signals reported in this area yet.")
+            if st.button(f"Verify #{i+1}", key=f"v_{idx}"):
+                worksheet.update_cell(int(idx) + 2, 9, int(row.get('verifications', 0)) + 1)
+                st.cache_data.clear()
+                st.rerun()
