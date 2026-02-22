@@ -53,6 +53,8 @@ def load_data():
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
         df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
+        # Ensure verifications is numeric
+        df['verifications'] = pd.to_numeric(df.get('verifications', 0), errors='coerce').fillna(0).astype(int)
         df['map_color'] = df['status'].apply(lambda x: get_status_styles(x)['map'])
         return df
     except: return pd.DataFrame()
@@ -86,7 +88,8 @@ with st.sidebar:
                     f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
 
                 t_stamp = datetime.now().strftime("%I:%M %p")
-                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp, img_data])
+                # Order: Name, Status, Lat, Lon, Radius, Street, Time, Image, Verifications (Start at 0)
+                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp, img_data, 0])
                 st.success("Signal Sent!")
                 st.rerun()
 
@@ -111,7 +114,7 @@ layer = pdk.Layer(
 
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer], tooltip={"text": "{alert_name}\nStatus: {status}"}))
 
-# --- 7. RECENT ALERTS (Restored to "Better State") ---
+# --- 7. RECENT ALERTS (With Verification System) ---
 st.divider()
 st.subheader("📍 Recent Signals")
 
@@ -122,21 +125,35 @@ if not df_map.empty:
     for i, (idx, row) in enumerate(recent_items.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
         
-        # Image Logic: Fixed height to keep cards uniform
+        # Image Logic
         img_val = row.get('image', '')
         if img_val and str(img_val).startswith('data:image'):
             img_html = f'<div style="height: 120px; overflow: hidden; border-radius: 5px; margin-bottom: 10px;"><img src="{img_val}" style="width: 100%; height: 100%; object-fit: cover;"></div>'
         else:
-            # Placeholder to keep card heights equal even without image
             img_html = '<div style="height: 120px; background: #eee; border-radius: 5px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 24px;">📷</div>'
         
         with cols[i]:
             st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 320px; display: flex; flex-direction: column;">
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 380px; display: flex; flex-direction: column;">
                     {img_html}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0; flex-grow: 0;">{row.get('alert_name', 'Alert')}</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
                     <div style="font-size: 14px; color: #333; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
-                    <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; width: fit-content;">{row.get('status', 'Active').upper()}</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                        <span style="font-size: 12px; color: #555;">✅ {row.get('verifications', 0)} Verified</span>
+                    </div>
                 </div>
             """, unsafe_allow_html=True)
+            
+            # THE VERIFICATION BUTTON
+            if st.button(f"Verify Signal #{i+1}", key=f"verify_{idx}"):
+                # Find the correct row in GSheets (GSheets is 1-indexed, +1 for header)
+                # idx is the pandas index from the dataframe
+                row_to_update = int(idx) + 2 
+                current_val = int(row.get('verifications', 0))
+                
+                # Get the column index for 'Verifications' (assuming it's column 9)
+                worksheet.update_cell(row_to_update, 9, current_val + 1)
+                st.toast("Signal Verified!")
+                st.rerun()
