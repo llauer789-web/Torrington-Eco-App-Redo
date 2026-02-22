@@ -4,14 +4,17 @@ import pydeck as pdk
 import gspread
 import base64
 import requests
+import time
 from io import BytesIO
 from PIL import Image
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="localsignal_usa_v6")
+# Added a unique user agent to help prevent being blocked
+geolocator = Nominatim(user_agent="localsignal_usa_v7_final")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -24,7 +27,18 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. CACHED HELPERS ---
+# --- 2. HELPERS (Now with Error Handling) ---
+
+def safe_geocode(query, is_zip=False):
+    """Retries geocoding if the service is busy"""
+    for _ in range(3):  # Try 3 times
+        try:
+            if is_zip:
+                return geolocator.geocode(query, country_codes="us", timeout=10)
+            return geolocator.geocode(query, country_codes="us", timeout=10)
+        except (GeocoderTimedOut, GeocoderUnavailable):
+            time.sleep(1) # Wait a second before retrying
+    return None
 
 @st.cache_data(ttl=300)
 def load_data():
@@ -43,7 +57,7 @@ def load_data():
 def get_zip_boundary(zip_code):
     try:
         url = f"https://nominatim.openstreetmap.org/search?postalcode={zip_code}&country=USA&format=geojson&polygon_geojson=1"
-        response = requests.get(url).json()
+        response = requests.get(url, timeout=10).json()
         if response and len(response['features']) > 0:
             return response['features'][0]
     except: return None
@@ -78,7 +92,7 @@ df_all = load_data()
 # --- 4. SIDEBAR ---
 with st.sidebar:
     st.title("📡 LocalSignal USA")
-    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="06790")
+    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="e.g. 06790")
     
     if user_zip != current_zip:
         st.query_params["zip"] = user_zip
@@ -89,32 +103,36 @@ with st.sidebar:
     
     if user_zip:
         boundary_data = get_zip_boundary(user_zip)
-        try:
-            zip_loc = geolocator.geocode(user_zip, country_codes="us")
+        with st.spinner("Locating neighborhood..."):
+            zip_loc = safe_geocode(user_zip, is_zip=True)
             if zip_loc:
                 st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
                 df_filtered = df_all[
                     (df_all['lat'].between(zip_loc.latitude - 0.15, zip_loc.latitude + 0.15)) &
                     (df_all['lon'].between(zip_loc.longitude - 0.15, zip_loc.longitude + 0.15))
                 ].copy()
-        except: pass
 
     tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
     with tab1:
         with st.form("report_form", clear_on_submit=True):
             n_name = st.text_input("Signal Name")
-            n_street = st.text_input("Address", placeholder="Include Zip")
+            n_street = st.text_input("Address", placeholder="e.g. 123 Main St, 06790")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
-            n_size = st.number_input("Signal Radius (meters)", min_value=1, max_value=2000, value=50, step=1)
+            n_size = st.number_input("Radius (meters)", min_value=1, max_value=2000, value=50)
             n_photo = st.file_uploader("Upload Photo", type=['jpg', 'png'])
+            
             if st.form_submit_button("Send Signal"):
-                img_data = process_image(n_photo)
-                loc = geolocator.geocode(n_street, country_codes="us")
-                if loc:
-                    t_stamp = datetime.now().strftime("%m/%d/%Y %I:%M %p")
-                    worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, t_stamp, img_data, 0])
-                    st.cache_data.clear()
-                    st.rerun()
+                with st.spinner("Processing location..."):
+                    img_data = process_image(n_photo)
+                    loc = safe_geocode(n_street)
+                    if loc:
+                        t_stamp = datetime.now().strftime("%m/%d/%Y %I:%M %p")
+                        worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, t_stamp, img_data, 0])
+                        st.cache_data.clear()
+                        st.success("Signal Sent!")
+                        st.rerun()
+                    else:
+                        st.error("Could not find address. Please be more specific.")
 
 # --- 5. MAIN MAP ---
 st.title(f"🌍 LocalSignal: {user_zip if user_zip else 'USA'}")
@@ -137,12 +155,11 @@ if not df_filtered.empty:
 
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=pdk.ViewState(latitude=st.session_state.map_center["lat"], longitude=st.session_state.map_center["lon"], zoom=13), layers=layers))
 
-# --- 6. RECENT SIGNALS (RE-RESTORED) ---
+# --- 6. RECENT SIGNALS (All features restored) ---
 st.divider()
 st.subheader(f"📍 Recent Neighborhood Signals {user_zip}")
 
 if not df_filtered.empty:
-    # Sort by the spreadsheet order (most recent at bottom of sheet = top of app)
     recent = df_filtered.iloc[::-1].head(4)
     cols = st.columns(4)
     
@@ -150,7 +167,6 @@ if not df_filtered.empty:
         style = get_status_styles(row.get('status', 'Active'))
         img_val = row.get('image', '')
         
-        # Build image HTML
         img_html = f'<div style="height:140px; background:#eee; border-radius:8px; margin-bottom:12px; overflow:hidden;">'
         if img_val and str(img_val).startswith('data:image'):
             img_html += f'<img src="{img_val}" style="width:100%; height:100%; object-fit:cover;">'
@@ -172,9 +188,9 @@ if not df_filtered.empty:
                 </div>
             """, unsafe_allow_html=True)
             
-            if st.button(f"Verify Signal #{i+1}", key=f"v_btn_{idx}"):
+            if st.button(f"Verify #{i+1}", key=f"v_btn_{idx}"):
                 worksheet.update_cell(int(idx) + 2, 9, int(row.get('verifications', 0)) + 1)
                 st.cache_data.clear()
                 st.rerun()
 else:
-    st.info("No active neighborhood signals.")
+    st.info("No neighborhood signals found.")
