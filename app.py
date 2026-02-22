@@ -23,9 +23,9 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. CACHED HELPERS (The Speed Logic) ---
+# --- 2. CACHED HELPERS ---
 
-@st.cache_data(ttl=300) # Cache for 5 minutes (300 seconds)
+@st.cache_data(ttl=300)
 def load_data():
     try:
         data = worksheet.get_all_records()
@@ -80,25 +80,22 @@ with st.sidebar:
     st.subheader("🏘️ My Neighborhood")
     user_zip = st.text_input("US Zip Code", value=saved_zip, placeholder="e.g. 06790")
     
-    # American-Only Filter Logic
     df_filtered = df_all
     if user_zip:
         if user_zip != saved_zip:
             st.query_params["zip"] = user_zip
-            st.cache_data.clear() # Clear cache when moving neighborhoods
+            st.cache_data.clear()
 
         try:
-            # The 'country_codes' parameter locks search to USA
             zip_loc = geolocator.geocode(user_zip, country_codes="us")
             if zip_loc:
                 st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
-                # Filter radius (approx 10 miles)
                 df_filtered = df_all[
                     (df_all['lat'].between(zip_loc.latitude - 0.15, zip_loc.latitude + 0.15)) &
                     (df_all['lon'].between(zip_loc.longitude - 0.15, zip_loc.longitude + 0.15))
                 ]
             else:
-                st.warning("Please enter a valid US Zip Code.")
+                st.warning("Invalid US Zip Code.")
         except: pass
 
     tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
@@ -107,7 +104,7 @@ with st.sidebar:
         st.subheader("New Signal")
         with st.form("report_form", clear_on_submit=True):
             n_name = st.text_input("Signal Name")
-            n_street = st.text_input("US Address/Street", placeholder="e.g. 123 Main St, 06790")
+            n_street = st.text_input("US Address", placeholder="e.g. 123 Main St, 06790")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
             n_size = st.select_slider("Radius", options=[50, 100, 250, 500, 1000], value=250)
             n_photo = st.file_uploader("Upload Photo", type=['jpg', 'jpeg', 'png'])
@@ -115,18 +112,17 @@ with st.sidebar:
             if st.form_submit_button("Send Signal"):
                 img_data = process_image(n_photo)
                 try:
-                    # Lock reporting to USA as well
                     location = geolocator.geocode(n_street, country_codes="us")
                     if location:
                         f_lat, f_lon = location.latitude, location.longitude
                         worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, datetime.now().strftime("%I:%M %p"), img_data, 0])
-                        st.cache_data.clear() # Refresh data after new post
+                        st.cache_data.clear()
                         st.success("Signal Sent!")
                         st.rerun()
                     else:
-                        st.error("Address not found within the USA.")
+                        st.error("Address not found in USA.")
                 except:
-                    st.error("Error finding address.")
+                    st.error("Geocoding Error.")
 
     with tab2:
         u_msg = st.text_input("Message")
@@ -165,18 +161,30 @@ if not df_filtered.empty:
         style = get_status_styles(row.get('status', 'Active'))
         img_val = row.get('image', '')
         
-        # Consistent Card UI
-        img_html = f'<div style="height: 120px; overflow: hidden; border-radius: 5px; margin-bottom: 10px; background: #eee; display: flex; align-items: center; justify-content: center;">'
+        # Build image HTML safely
+        img_display = '<div style="height: 120px; background: #eee; border-radius: 5px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center;"><span style="color: #aaa; font-size: 24px;">📷</span></div>'
         if img_val and str(img_val).startswith('data:image'):
-            img_html += f'<img src="{img_val}" style="width: 100%; height: 100%; object-fit: cover;">'
-        else:
-            img_html += '<span style="color: #aaa; font-size: 24px;">📷</span>'
-        img_html += '</div>'
+            img_display = f'<div style="height: 120px; overflow: hidden; border-radius: 5px; margin-bottom: 10px;"><img src="{img_val}" style="width: 100%; height: 100%; object-fit: cover;"></div>'
         
         with cols[i]:
             st.markdown(f"""
                 <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 380px; display: flex; flex-direction: column;">
-                    {img_html}
+                    {img_display}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
                     <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size
+                    <div style="font-size: 14px; color: #333; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+                        <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                        <span style="font-size: 12px; color: #555;">✅ {row.get('verifications', 0)}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            if st.button(f"Verify #{i+1}", key=f"v_{idx}"):
+                row_to_update = int(idx) + 2 
+                current_val = int(row.get('verifications', 0))
+                worksheet.update_cell(row_to_update, 9, current_val + 1)
+                st.cache_data.clear()
+                st.rerun()
+else:
+    st.info("No neighborhood signals found yet.")
