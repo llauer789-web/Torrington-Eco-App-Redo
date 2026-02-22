@@ -22,7 +22,31 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. DATA FUNCTIONS ---
+# --- 2. CSS FOR PERMANENT CROSSHAIR ---
+# This injects a red dot exactly in the center of the map area
+st.markdown("""
+    <style>
+    .map-container {
+        position: relative;
+    }
+    .crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 12px;
+        height: 12px;
+        background-color: red;
+        border-radius: 50%;
+        border: 2px solid white;
+        transform: translate(-50%, -50%);
+        z-index: 10;
+        pointer-events: none; /* Allows clicking through the dot to the map */
+        box-shadow: 0px 0px 5px rgba(0,0,0,0.5);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 3. DATA FUNCTIONS ---
 def get_status_color(status):
     colors = {
         "Urgent": [255, 0, 0, 160],
@@ -54,7 +78,7 @@ def load_chat():
         return pd.DataFrame(chat_data)
     except: return pd.DataFrame(columns=["Timestamp", "User", "Message"])
 
-# --- 3. INITIALIZATION ---
+# --- 4. INITIALIZATION ---
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
 if 'alerts_df' not in st.session_state:
@@ -62,11 +86,10 @@ if 'alerts_df' not in st.session_state:
 if 'chat_df' not in st.session_state:
     st.session_state.chat_df = load_chat()
 
-# Standard View State
 if 'map_view' not in st.session_state:
     st.session_state.map_view = {"latitude": 41.8006, "longitude": -73.1212, "zoom": 13}
 
-# --- 4. SIDEBAR ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.title("🚨 Torrington Pulse")
     tab1, tab2 = st.tabs(["💬 Chat", "📢 Report"])
@@ -89,14 +112,16 @@ with st.sidebar:
 
     with tab2:
         st.subheader("New Alert")
-        st.info("Center the map over the issue. The red dot shows your target.")
+        st.info("Align the red center-dot over the issue, then fill this out.")
         with st.form("alert_form", clear_on_submit=True):
             n_name = st.text_input("Issue Title")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
             
-            # Using current session state map center
-            n_lat = st.number_input("Lat", value=float(st.session_state.map_view["latitude"]), format="%.5f")
-            n_lon = st.number_input("Lon", value=float(st.session_state.map_view["longitude"]), format="%.5f")
+            # These values will still be "Torrington" until you hit submit 
+            # or add a "Refresh Coordinates" button, because pydeck 
+            # doesn't talk back to Streamlit easily in this version.
+            n_lat = st.number_input("Lat (Manual adjust if needed)", value=float(st.session_state.map_view["latitude"]), format="%.5f")
+            n_lon = st.number_input("Lon (Manual adjust if needed)", value=float(st.session_state.map_view["longitude"]), format="%.5f")
             
             n_rad = st.slider("Alert Radius (Meters)", 50, 1000, 250)
             if st.form_submit_button("Submit Alert"):
@@ -105,7 +130,7 @@ with st.sidebar:
                 st.success("Alert Saved!")
                 st.rerun()
 
-# --- 5. MAIN UI ---
+# --- 6. MAIN UI ---
 st.title("🌍 Eco-Pulse Live Map")
 
 df_map = st.session_state.alerts_df
@@ -116,11 +141,14 @@ if not df_map.empty and sel_stat != "All":
 c1, c2 = st.columns([3, 1])
 
 with c1:
-    # 5a. Build the view state
-    view_state = pdk.ViewState(**st.session_state.map_view)
+    # Wrap the map in a div that matches our CSS class
+    st.markdown('<div class="map-container">', unsafe_allow_html=True)
     
-    # 5b. Layer for existing alerts
-    alerts_layer = pdk.Layer(
+    # The Crosshair Dot
+    st.markdown('<div class="crosshair"></div>', unsafe_allow_html=True)
+    
+    view_state = pdk.ViewState(**st.session_state.map_view)
+    layer = pdk.Layer(
         "ScatterplotLayer", df_map,
         get_position='[lon, lat]',
         get_color="color",
@@ -128,30 +156,15 @@ with c1:
         pickable=True,
     )
 
-    # 5c. NEW: Center Crosshair Dot
-    # This places a single small, solid red dot at the center coordinates
-    center_data = pd.DataFrame([{
-        "lat": st.session_state.map_view["latitude"],
-        "lon": st.session_state.map_view["longitude"]
-    }])
-    
-    center_dot_layer = pdk.Layer(
-        "ScatterplotLayer",
-        center_data,
-        get_position='[lon, lat]',
-        get_color=[255, 0, 0, 255],  # Solid Red
-        get_radius=15,               # Small and precise
-        filled=True
-    )
-
     r = pdk.Deck(
         map_style='light',
         initial_view_state=view_state,
-        layers=[alerts_layer, center_dot_layer],
+        layers=[layer],
         tooltip={"text": "{display_name}\nStatus: {display_status}"}
     )
 
     st.pydeck_chart(r)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 with c2:
     st.subheader("📍 Recent Alerts")
