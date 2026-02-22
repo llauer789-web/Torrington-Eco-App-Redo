@@ -10,7 +10,7 @@ from datetime import datetime
 from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="localsignal_pulse_global")
+geolocator = Nominatim(user_agent="localsignal_usa_v1")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -23,7 +23,23 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. HELPERS ---
+# --- 2. CACHED HELPERS (The Speed Logic) ---
+
+@st.cache_data(ttl=300) # Cache for 5 minutes (300 seconds)
+def load_data():
+    try:
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
+        df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
+        df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
+        df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
+        df['verifications'] = pd.to_numeric(df.get('verifications', 0), errors='coerce').fillna(0).astype(int)
+        df['map_color'] = df['status'].apply(lambda x: get_status_styles(x)['map'])
+        return df
+    except: return pd.DataFrame()
+
+@st.cache_data
 def get_status_styles(status):
     status = str(status).strip().capitalize()
     styles = {
@@ -44,23 +60,9 @@ def process_image(uploaded_file):
         return f"data:image/jpeg;base64,{img_str}"
     return ""
 
-def load_data():
-    try:
-        data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
-        df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
-        df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
-        df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
-        df['verifications'] = pd.to_numeric(df.get('verifications', 0), errors='coerce').fillna(0).astype(int)
-        df['map_color'] = df['status'].apply(lambda x: get_status_styles(x)['map'])
-        return df
-    except: return pd.DataFrame()
+# --- 3. INITIALIZATION ---
+st.set_page_config(page_title="LocalSignal USA", layout="wide")
 
-# --- 3. INITIALIZATION & ZIP PERSISTENCE ---
-st.set_page_config(page_title="LocalSignal", layout="wide")
-
-# Persistent Zip via URL
 if "zip" in st.query_params:
     saved_zip = st.query_params["zip"]
 else:
@@ -73,27 +75,30 @@ df_all = load_data()
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
-    st.title("📡 LocalSignal")
+    st.title("📡 LocalSignal USA")
     
-    # Neighborhood Zip Filter
     st.subheader("🏘️ My Neighborhood")
-    user_zip = st.text_input("Zip Code", value=saved_zip, placeholder="e.g. 06790")
+    user_zip = st.text_input("US Zip Code", value=saved_zip, placeholder="e.g. 06790")
     
-    if user_zip != saved_zip:
-        st.query_params["zip"] = user_zip # Save to URL
-    
-    # Filtering Logic
+    # American-Only Filter Logic
     df_filtered = df_all
     if user_zip:
+        if user_zip != saved_zip:
+            st.query_params["zip"] = user_zip
+            st.cache_data.clear() # Clear cache when moving neighborhoods
+
         try:
-            zip_loc = geolocator.geocode(user_zip)
+            # The 'country_codes' parameter locks search to USA
+            zip_loc = geolocator.geocode(user_zip, country_codes="us")
             if zip_loc:
                 st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
-                # Show pins within roughly 10-15 miles
+                # Filter radius (approx 10 miles)
                 df_filtered = df_all[
                     (df_all['lat'].between(zip_loc.latitude - 0.15, zip_loc.latitude + 0.15)) &
                     (df_all['lon'].between(zip_loc.longitude - 0.15, zip_loc.longitude + 0.15))
                 ]
+            else:
+                st.warning("Please enter a valid US Zip Code.")
         except: pass
 
     tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
@@ -102,7 +107,7 @@ with st.sidebar:
         st.subheader("New Signal")
         with st.form("report_form", clear_on_submit=True):
             n_name = st.text_input("Signal Name")
-            n_street = st.text_input("Address/Street", placeholder="Include Zip for accuracy")
+            n_street = st.text_input("US Address/Street", placeholder="e.g. 123 Main St, 06790")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
             n_size = st.select_slider("Radius", options=[50, 100, 250, 500, 1000], value=250)
             n_photo = st.file_uploader("Upload Photo", type=['jpg', 'jpeg', 'png'])
@@ -110,17 +115,18 @@ with st.sidebar:
             if st.form_submit_button("Send Signal"):
                 img_data = process_image(n_photo)
                 try:
-                    location = geolocator.geocode(n_street)
-                    f_lat = location.latitude if location else st.session_state.map_center["lat"]
-                    f_lon = location.longitude if location else st.session_state.map_center["lon"]
+                    # Lock reporting to USA as well
+                    location = geolocator.geocode(n_street, country_codes="us")
+                    if location:
+                        f_lat, f_lon = location.latitude, location.longitude
+                        worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, datetime.now().strftime("%I:%M %p"), img_data, 0])
+                        st.cache_data.clear() # Refresh data after new post
+                        st.success("Signal Sent!")
+                        st.rerun()
+                    else:
+                        st.error("Address not found within the USA.")
                 except:
-                    f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
-
-                t_stamp = datetime.now().strftime("%I:%M %p")
-                # Order: Name, Status, Lat, Lon, Radius, Street, Time, Image, Verifications
-                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp, img_data, 0])
-                st.success("Signal Sent!")
-                st.rerun()
+                    st.error("Error finding address.")
 
     with tab2:
         u_msg = st.text_input("Message")
@@ -129,12 +135,12 @@ with st.sidebar:
             st.rerun()
 
 # --- 5. MAIN UI ---
-st.title(f"🌍 LocalSignal {'| ' + user_zip if user_zip else ''}")
+st.title(f"🌍 LocalSignal USA {'| ' + user_zip if user_zip else ''}")
 
 view_state = pdk.ViewState(
     latitude=st.session_state.map_center["lat"], 
     longitude=st.session_state.map_center["lon"], 
-    zoom=13 if user_zip else 12
+    zoom=13 if user_zip else 11
 )
 
 layer = pdk.Layer(
@@ -158,6 +164,8 @@ if not df_filtered.empty:
     for i, (idx, row) in enumerate(recent_items.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
         img_val = row.get('image', '')
+        
+        # Consistent Card UI
         img_html = f'<div style="height: 120px; overflow: hidden; border-radius: 5px; margin-bottom: 10px; background: #eee; display: flex; align-items: center; justify-content: center;">'
         if img_val and str(img_val).startswith('data:image'):
             img_html += f'<img src="{img_val}" style="width: 100%; height: 100%; object-fit: cover;">'
@@ -171,18 +179,4 @@ if not df_filtered.empty:
                     {img_html}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
                     <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size: 14px; color: #333; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
-                        <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
-                        <span style="font-size: 12px; color: #555;">✅ {row.get('verifications', 0)}</span>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            if st.button(f"Verify #{i+1}", key=f"v_{idx}"):
-                row_to_update = int(idx) + 2 
-                current_val = int(row.get('verifications', 0))
-                worksheet.update_cell(row_to_update, 9, current_val + 1)
-                st.rerun()
-else:
-    st.info("No signals found in this neighborhood yet. Be the first to report!")
+                    <div style="font-size
