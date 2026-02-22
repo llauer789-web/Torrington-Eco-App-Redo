@@ -4,7 +4,7 @@ import pydeck as pdk
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from geopy.geocoders import Nominatim  # For turning addresses into coordinates
+from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
 geolocator = Nominatim(user_agent="torrington_eco_pulse")
@@ -20,29 +20,31 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. CSS FOR CROSSHAIR ---
-st.markdown("""
-    <style>
-    .map-wrapper { position: relative; }
-    .map-crosshair {
-        position: absolute; top: 50%; left: 50%;
-        width: 24px; height: 24px;
-        border: 2px solid #FF4B4B; border-radius: 50%;
-        transform: translate(-50%, -50%); z-index: 999;
-        pointer-events: none;
+# --- 2. THE COLOR SYSTEM (Fixed for Clarity) ---
+def get_status_styles(status):
+    status = str(status).strip().capitalize()
+    styles = {
+        "Urgent":  {"map": [255, 75, 75, 180],  "hex": "#FF4B4B", "bg": "#FFF5F5"},
+        "Active":  {"map": [255, 165, 0, 180], "hex": "#FFA500", "bg": "#FFFAF0"},
+        "Watching":{"map": [255, 215, 0, 180], "hex": "#FFD700", "bg": "#FFFFF0"},
+        "Resolved":{"map": [46, 125, 50, 180], "hex": "#2E7D32", "bg": "#F1F8E9"}
     }
-    </style>
-    """, unsafe_allow_html=True)
+    return styles.get(status, {"map": [100, 100, 100, 180], "hex": "#666666", "bg": "#F5F5F5"})
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 3. DATA LOADING ---
 def load_data():
     try:
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        # Failsafe for missing columns
-        for col in ['lat', 'lon', 'status', 'alert_name', 'street', 'timestamp']:
-            if col not in df.columns: df[col] = 0 if col in ['lat', 'lon'] else "N/A"
+        
+        # Ensure coordinates and size (radius) are numeric
+        df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
+        df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
+        df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
+        
+        # Map styles
+        df['map_color'] = df['status'].apply(lambda x: get_status_styles(x)['map'])
         return df
     except: return pd.DataFrame()
 
@@ -51,84 +53,73 @@ st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 if 'map_center' not in st.session_state:
     st.session_state.map_center = {"lat": 41.8006, "lon": -73.1212}
 
-# --- 5. SIDEBAR (The User-Friendly Reporting) ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.title("🚨 Torrington Pulse")
-    tab1, tab2 = st.tabs(["📢 Report Issue", "💬 Chat"])
+    tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
 
     with tab1:
-        st.subheader("How to Report:")
-        report_method = st.radio("Choose Method:", ["Type Address", "Use Map Center"])
-        
+        st.subheader("New Report")
         with st.form("report_form", clear_on_submit=True):
-            n_name = st.text_input("What is the issue?", placeholder="e.g. Huge Pothole")
-            n_status = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
+            n_name = st.text_input("What's happening?", placeholder="e.g. Flooded Street")
+            n_street = st.text_input("Address/Street Name", placeholder="e.g. 50 Main St")
+            n_stat = st.selectbox("Urgency Level", ["Urgent", "Active", "Watching", "Resolved"])
+            n_size = st.select_slider("Size of Area (Radius)", options=[50, 100, 250, 500, 1000], value=250)
             
-            final_lat, final_lon, final_street = 0.0, 0.0, ""
+            if st.form_submit_button("Submit Alert"):
+                try:
+                    # Attempt to find location via street name
+                    location = geolocator.geocode(f"{n_street}, Torrington, CT")
+                    f_lat = location.latitude if location else st.session_state.map_center["lat"]
+                    f_lon = location.longitude if location else st.session_state.map_center["lon"]
+                except:
+                    f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
 
-            if report_method == "Type Address":
-                n_street = st.text_input("Street Address", placeholder="e.g. 100 Main St, Torrington")
-                st.caption("We'll find the coordinates for you!")
-            else:
-                st.info("The red circle in the center of the map is your target.")
-                n_street = st.text_input("Verify Street Name", placeholder="e.g. East Main St")
-            
-            if st.form_submit_button("Submit to Map"):
-                if report_method == "Type Address" and n_street:
-                    try:
-                        location = geolocator.geocode(f"{n_street}, Torrington, CT")
-                        if location:
-                            final_lat, final_lon, final_street = location.latitude, location.longitude, n_street
-                        else:
-                            st.error("Could not find that address. Using map center instead.")
-                            final_lat, final_lon, final_street = st.session_state.map_center["lat"], st.session_state.map_center["lon"], "Torrington"
-                    except:
-                        final_lat, final_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
-                else:
-                    final_lat, final_lon, final_street = st.session_state.map_center["lat"], st.session_state.map_center["lon"], n_street
-
-                # SAVE TO SHEET
-                t_stamp = datetime.now().strftime("%m/%d %I:%M %p")
-                worksheet.append_row([n_name, n_status, final_lat, final_lon, 250, final_street, t_stamp])
-                st.success("Successfully Reported!")
+                t_stamp = datetime.now().strftime("%I:%M %p")
+                # Add to Sheet: Name, Status, Lat, Lon, Radius, Street, Time
+                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp])
+                st.success("Reported!")
                 st.rerun()
 
     with tab2:
-        # (Chat logic remains the same)
-        st.subheader("Community Chat")
+        # Chat Logic
         u_msg = st.text_input("Message")
         if st.button("Send"):
             chat_worksheet.append_row([datetime.now().strftime("%H:%M"), "Guest", u_msg])
             st.rerun()
 
 # --- 6. MAIN MAP ---
-st.title("🌍 Live Map")
+st.title("🌍 Eco-Pulse Live Map")
 df_map = load_data()
 
-st.markdown('<div class="map-wrapper">', unsafe_allow_html=True)
-st.markdown('<div class="map-crosshair"></div>', unsafe_allow_html=True)
-
-view_state = pdk.ViewState(
-    latitude=st.session_state.map_center["lat"], 
-    longitude=st.session_state.map_center["lon"], 
-    zoom=14
-)
-
-# Render alerts
+# Render the Map
+view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 layer = pdk.Layer(
     "ScatterplotLayer", df_map,
     get_position='[lon, lat]',
-    get_color="[255, 0, 0, 160]",
-    get_radius=100,
+    get_color="map_color",
+    get_radius="radius",
     pickable=True
 )
 
-st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer]))
-st.markdown('</div>', unsafe_allow_html=True)
+st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer], tooltip={"text": "{alert_name}\nStatus: {status}"}))
 
-# --- 7. RECENT FEED ---
+# --- 7. RECENT ALERTS (The "Better" State) ---
 st.divider()
 st.subheader("📍 Recent Activity")
+
 if not df_map.empty:
-    for _, row in df_map.tail(3).iloc[::-1].iterrows():
-        st.write(f"**{row['timestamp']}** | **{row['alert_name']}** at {row['street']} — *{row['status']}*")
+    recent_items = df_map.iloc[::-1].head(4)
+    cols = st.columns(4)
+    
+    for i, (idx, row) in enumerate(recent_items.iterrows()):
+        style = get_status_styles(row.get('status', 'Active'))
+        with cols[i]:
+            st.markdown(f"""
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 140px;">
+                    <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
+                    <div style="font-size: 14px; color: #333; margin-bottom: 8px;">📍 {row.get('street', 'Torrington')}</div>
+                    <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                </div>
+            """, unsafe_allow_html=True)
