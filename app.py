@@ -22,52 +22,45 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. CSS FOR CROSSHAIR ---
-st.markdown("""
-    <style>
-    .map-wrapper { position: relative; }
-    .map-crosshair {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        width: 20px;
-        height: 20px;
-        border: 2px solid red;
-        border-radius: 50%;
-        transform: translate(-50%, -50%);
-        z-index: 999;
-        pointer-events: none;
+# --- 2. DATA FUNCTIONS ---
+def get_status_color(status):
+    status = str(status).strip().capitalize()
+    colors = {
+        "Urgent": [255, 0, 0, 160],   # Red
+        "Active": [255, 165, 0, 160], # Orange
+        "Watching": [255, 215, 0, 160], # Gold
+        "Resolved": [0, 128, 0, 160]   # Green
     }
-    .map-crosshair::after {
-        content: '';
-        position: absolute;
-        top: 50%; left: 50%;
-        width: 2px; height: 10px;
-        background: red;
-        transform: translate(-50%, -50%);
-    }
-    .map-crosshair::before {
-        content: '';
-        position: absolute;
-        top: 50%; left: 50%;
-        width: 10px; height: 2px;
-        background: red;
-        transform: translate(-50%, -50%);
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    return colors.get(status, [125, 125, 125, 160])
+
+def load_data():
+    try:
+        data = worksheet.get_all_records()
+        if not data: return pd.DataFrame()
+        df = pd.DataFrame(data)
+        # Clean headers: lowercase and replace spaces with underscores
+        df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
+        
+        # Ensure coordinates are numbers
+        df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+        df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+        df = df.dropna(subset=['lat', 'lon'])
+        
+        # Mapping Display Fields (using .get to prevent crashes if column is missing)
+        df['d_name'] = df.get('alert_name', 'Unnamed Alert')
+        df['d_status'] = df.get('status', 'Active')
+        df['d_street'] = df.get('street', 'Unknown Street')
+        df['d_time'] = df.get('timestamp', 'Recently')
+        df['color'] = df['d_status'].apply(get_status_color)
+        df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
+        return df
+    except: return pd.DataFrame()
 
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
 
 if 'alerts_df' not in st.session_state:
-    st.session_state.alerts_df = pd.DataFrame()
-
-# Store captured coords
-if 'locked_lat' not in st.session_state:
-    st.session_state.locked_lat = 41.8006
-if 'locked_lon' not in st.session_state:
-    st.session_state.locked_lon = -73.1212
+    st.session_state.alerts_df = load_data()
 
 # --- 4. SIDEBAR ---
 with st.sidebar:
@@ -76,7 +69,6 @@ with st.sidebar:
     
     with tab1:
         st.subheader("Community Chat")
-        # Chat display logic
         try:
             chat_logs = chat_worksheet.get_all_records()
             for msg in chat_logs[-8:]:
@@ -87,68 +79,65 @@ with st.sidebar:
             u_name = st.text_input("Name", value="Guest")
             u_msg = st.text_input("Message")
             if st.form_submit_button("Send"):
-                chat_worksheet.append_row([datetime.now().strftime("%H:%M"), u_name, u_msg])
+                chat_worksheet.append_row([datetime.now().strftime("%m/%d %H:%M"), u_name, u_msg])
                 st.rerun()
 
     with tab2:
         st.subheader("New Alert")
-        st.write(f"**Target:** `{st.session_state.locked_lat:.4f}, {st.session_state.locked_lon:.4f}`")
-        
-        with st.form("alert_form"):
-            n_name = st.text_input("Issue Title")
+        with st.form("alert_form", clear_on_submit=True):
+            n_name = st.text_input("Issue (e.g. Fallen Branch)")
+            n_street = st.text_input("Street Name")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
-            n_rad = st.slider("Radius (Meters)", 50, 1000, 250)
+            n_lat = st.number_input("Lat", value=41.8006, format="%.4f")
+            n_lon = st.number_input("Lon", value=-73.1212, format="%.4f")
             
-            # Form uses the locked session variables
             if st.form_submit_button("Submit Alert"):
-                worksheet.append_row([n_name, n_stat, st.session_state.locked_lat, st.session_state.locked_lon, n_rad])
+                timestamp = datetime.now().strftime("%m/%d %I:%M %p")
+                # Order: Alert_Name, Status, Lat, Lon, Radius, Street, Timestamp
+                worksheet.append_row([n_name, n_stat, n_lat, n_lon, 250, n_street, timestamp])
+                st.session_state.alerts_df = load_data()
                 st.success("Alert Saved!")
                 st.rerun()
 
 # --- 5. MAIN UI ---
 st.title("🌍 Eco-Pulse Live Map")
 
-# Map Section
-st.markdown('<div class="map-wrapper">', unsafe_allow_html=True)
-st.markdown('<div class="map-crosshair"></div>', unsafe_allow_html=True)
+df_map = st.session_state.alerts_df
 
-# Update alerts data
-st.session_state.alerts_df = pd.DataFrame(worksheet.get_all_records())
-
-view_state = pdk.ViewState(
-    latitude=st.session_state.locked_lat, 
-    longitude=st.session_state.locked_lon, 
-    zoom=13
-)
-
+# MAP VIEW
+view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
 layer = pdk.Layer(
-    "ScatterplotLayer", st.session_state.alerts_df,
+    "ScatterplotLayer", df_map,
     get_position='[lon, lat]',
-    get_color=[255, 0, 0, 160],
-    get_radius=200,
+    get_color="color",
+    get_radius="radius",
+    pickable=True,
 )
+st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer]))
 
-r = pdk.Deck(
-    map_style='light',
-    initial_view_state=view_state,
-    layers=[layer],
-)
-
-# STABLE CHART CALL
-st.pydeck_chart(r)
-st.markdown('</div>', unsafe_allow_html=True)
-
-# LOCATION CAPTURE BUTTON
-if st.button("📍 Capture Center Location", use_container_width=True):
-    # This won't work perfectly because pydeck is one-way, 
-    # but we can instruct the user to use this to 'Confirm' their view.
-    st.info("Location primed! If you moved the map, type the new coords in or just hit submit if happy.")
-
-# Recent alerts feed at bottom
+# --- 6. RECENT ALERTS FEED (The Big Update) ---
 st.divider()
-st.subheader("📍 Recent Activity")
-if not st.session_state.alerts_df.empty:
+st.subheader("📍 Recent Alerts Feed")
+
+if not df_map.empty:
+    # Get the 4 most recent alerts
+    recent_items = df_map.iloc[::-1].head(4)
     cols = st.columns(4)
-    for i, row in enumerate(st.session_state.alerts_df.tail(4).iloc[::-1].iterrows()):
+    
+    for i, (index, row) in enumerate(recent_items.iterrows()):
+        stat = row['d_status']
+        # Set border and text color based on status
+        border_clr = "#D32F2F" if stat == "Urgent" else "#EF6C00" if stat == "Active" else "#FBC02D" if stat == "Watching" else "#2E7D32"
+        bg_clr = "#FFF5F5" if stat == "Urgent" else "#FFFFFF"
+        
         with cols[i]:
-            st.metric(label=row[1].get('Status', 'Active'), value=row[1].get('Alert_Name', 'Alert'))
+            st.markdown(f"""
+                <div style="border: 1px solid #ddd; border-left: 8px solid {border_clr}; padding: 15px; border-radius: 10px; background-color: {bg_clr}; min-height: 150px;">
+                    <div style="font-size: 12px; color: #666; font-weight: bold; text-transform: uppercase;">{row['d_time']}</div>
+                    <div style="font-size: 18px; font-weight: 800; color: #111; margin-top: 5px;">{row['d_name']}</div>
+                    <div style="font-size: 14px; color: #444; margin-bottom: 10px;">📍 {row['d_street']}</div>
+                    <span style="background-color: {border_clr}; color: white; padding: 3px 10px; border-radius: 15px; font-size: 12px; font-weight: bold;">{stat}</span>
+                </div>
+            """, unsafe_allow_html=True)
+else:
+    st.write("No alerts reported yet.")
