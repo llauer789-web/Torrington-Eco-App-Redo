@@ -89,7 +89,7 @@ with st.sidebar:
 
     with tab2:
         st.subheader("New Alert")
-        st.info("The form uses the center of your map for the location.")
+        st.info("Center the map over the issue. The red dot shows your target.")
         with st.form("alert_form", clear_on_submit=True):
             n_name = st.text_input("Issue Title")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
@@ -116,10 +116,11 @@ if not df_map.empty and sel_stat != "All":
 c1, c2 = st.columns([3, 1])
 
 with c1:
-    # Build the map
+    # 5a. Build the view state
     view_state = pdk.ViewState(**st.session_state.map_view)
     
-    layer = pdk.Layer(
+    # 5b. Layer for existing alerts
+    alerts_layer = pdk.Layer(
         "ScatterplotLayer", df_map,
         get_position='[lon, lat]',
         get_color="color",
@@ -127,14 +128,29 @@ with c1:
         pickable=True,
     )
 
+    # 5c. NEW: Center Crosshair Dot
+    # This places a single small, solid red dot at the center coordinates
+    center_data = pd.DataFrame([{
+        "lat": st.session_state.map_view["latitude"],
+        "lon": st.session_state.map_view["longitude"]
+    }])
+    
+    center_dot_layer = pdk.Layer(
+        "ScatterplotLayer",
+        center_data,
+        get_position='[lon, lat]',
+        get_color=[255, 0, 0, 255],  # Solid Red
+        get_radius=15,               # Small and precise
+        filled=True
+    )
+
     r = pdk.Deck(
         map_style='light',
         initial_view_state=view_state,
-        layers=[layer],
+        layers=[alerts_layer, center_dot_layer],
         tooltip={"text": "{display_name}\nStatus: {display_status}"}
     )
 
-    # Simplified chart call to avoid the API Exception
     st.pydeck_chart(r)
 
 with c2:
