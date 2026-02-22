@@ -13,8 +13,7 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
 
 # --- 1. SETUP & CONNECTION ---
-# Added a unique user agent to help prevent being blocked
-geolocator = Nominatim(user_agent="localsignal_usa_v7_final")
+geolocator = Nominatim(user_agent="localsignal_usa_v8")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -23,44 +22,39 @@ try:
     SHEET_URL = "https://docs.google.com/spreadsheets/d/1zEWu2R2ryMDrMMAih1RfU5yBTdNA4uwpR_zcZZ4DXlc/edit"
     sh = client.open_by_url(SHEET_URL)
     worksheet = sh.get_worksheet(0)
-    chat_worksheet = sh.worksheet("Chat")
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. HELPERS (Now with Error Handling) ---
+# --- 2. HELPERS ---
 
-def safe_geocode(query, is_zip=False):
-    """Retries geocoding if the service is busy"""
-    for _ in range(3):  # Try 3 times
-        try:
-            if is_zip:
-                return geolocator.geocode(query, country_codes="us", timeout=10)
-            return geolocator.geocode(query, country_codes="us", timeout=10)
-        except (GeocoderTimedOut, GeocoderUnavailable):
-            time.sleep(1) # Wait a second before retrying
-    return None
+def safe_geocode(query):
+    try:
+        return geolocator.geocode(query, country_codes="us", timeout=10)
+    except:
+        return None
 
 @st.cache_data(ttl=300)
 def load_data():
     try:
         data = worksheet.get_all_records()
+        if not data:
+            return pd.DataFrame()
         df = pd.DataFrame(data)
-        df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
-        df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
-        df['radius'] = pd.to_numeric(df.get('radius', 50), errors='coerce').fillna(50)
-        df['verifications'] = pd.to_numeric(df.get('verifications', 0), errors='coerce').fillna(0).astype(int)
+        # Standardize column names: lowercase, remove spaces
+        df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return pd.DataFrame()
 
 @st.cache_data
 def get_zip_boundary(zip_code):
     try:
         url = f"https://nominatim.openstreetmap.org/search?postalcode={zip_code}&country=USA&format=geojson&polygon_geojson=1"
         response = requests.get(url, timeout=10).json()
-        if response and len(response['features']) > 0:
-            return response['features'][0]
-    except: return None
+        return response['features'][0] if response.get('features') else None
+    except:
+        return None
 
 def get_status_styles(status):
     status = str(status).strip().capitalize()
@@ -72,15 +66,6 @@ def get_status_styles(status):
     }
     return styles.get(status, {"map": [100, 100, 100], "hex": "#666666", "bg": "#F5F5F5"})
 
-def process_image(uploaded_file):
-    if uploaded_file is not None:
-        img = Image.open(uploaded_file)
-        img.thumbnail((400, 400)) 
-        buffered = BytesIO()
-        img.save(buffered, format="JPEG", quality=70)
-        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
-    return ""
-
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="LocalSignal USA", layout="wide")
 current_zip = st.query_params.get("zip", "")
@@ -89,10 +74,19 @@ if 'map_center' not in st.session_state:
 
 df_all = load_data()
 
-# --- 4. SIDEBAR ---
+# --- 4. DATA VALIDATION (The KeyError Fix) ---
+required_cols = ['lat', 'lon', 'alert_name', 'status', 'radius', 'timestamp']
+missing = [c for c in required_cols if c not in df_all.columns]
+
+if not df_all.empty and missing:
+    st.error(f"⚠️ Your Google Sheet is missing these columns: {', '.join(missing)}")
+    st.info("Please ensure your Google Sheet headers are: Alert Name, Status, Lat, Lon, Radius, Street, Timestamp, Image, Verifications")
+    st.stop()
+
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.title("📡 LocalSignal USA")
-    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="e.g. 06790")
+    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="06790")
     
     if user_zip != current_zip:
         st.query_params["zip"] = user_zip
@@ -103,94 +97,24 @@ with st.sidebar:
     
     if user_zip:
         boundary_data = get_zip_boundary(user_zip)
-        with st.spinner("Locating neighborhood..."):
-            zip_loc = safe_geocode(user_zip, is_zip=True)
-            if zip_loc:
-                st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
+        zip_loc = safe_geocode(user_zip)
+        if zip_loc:
+            st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
+            if not df_all.empty:
                 df_filtered = df_all[
-                    (df_all['lat'].between(zip_loc.latitude - 0.15, zip_loc.latitude + 0.15)) &
-                    (df_all['lon'].between(zip_loc.longitude - 0.15, zip_loc.longitude + 0.15))
+                    (pd.to_numeric(df_all['lat']).between(zip_loc.latitude - 0.1, zip_loc.latitude + 0.1)) &
+                    (pd.to_numeric(df_all['lon']).between(zip_loc.longitude - 0.1, zip_loc.longitude + 0.1))
                 ].copy()
 
-    tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
-    with tab1:
-        with st.form("report_form", clear_on_submit=True):
-            n_name = st.text_input("Signal Name")
-            n_street = st.text_input("Address", placeholder="e.g. 123 Main St, 06790")
-            n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
-            n_size = st.number_input("Radius (meters)", min_value=1, max_value=2000, value=50)
-            n_photo = st.file_uploader("Upload Photo", type=['jpg', 'png'])
-            
-            if st.form_submit_button("Send Signal"):
-                with st.spinner("Processing location..."):
-                    img_data = process_image(n_photo)
-                    loc = safe_geocode(n_street)
-                    if loc:
-                        t_stamp = datetime.now().strftime("%m/%d/%Y %I:%M %p")
-                        worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, t_stamp, img_data, 0])
-                        st.cache_data.clear()
-                        st.success("Signal Sent!")
-                        st.rerun()
-                    else:
-                        st.error("Could not find address. Please be more specific.")
-
-# --- 5. MAIN MAP ---
-st.title(f"🌍 LocalSignal: {user_zip if user_zip else 'USA'}")
-layers = []
-
-if boundary_data:
-    layers.append(pdk.Layer("GeoJsonLayer", boundary_data, opacity=0.1, stroked=True, filled=True, get_fill_color=[0, 150, 255, 30], get_line_color=[0, 100, 255, 200], line_width_min_pixels=2))
-
-if not df_filtered.empty:
-    df_filtered['color'] = df_filtered.apply(lambda r: get_status_styles(r['status'])['map'] + [180], axis=1)
-    layers.append(pdk.Layer(
-        "ScatterplotLayer",
-        df_filtered,
-        get_position='[lon, lat]',
-        get_color="color",
-        get_radius="radius",
-        radius_units="'meters'",
-        pickable=True
-    ))
-
-st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=pdk.ViewState(latitude=st.session_state.map_center["lat"], longitude=st.session_state.map_center["lon"], zoom=13), layers=layers))
-
-# --- 6. RECENT SIGNALS (All features restored) ---
-st.divider()
-st.subheader(f"📍 Recent Neighborhood Signals {user_zip}")
-
-if not df_filtered.empty:
-    recent = df_filtered.iloc[::-1].head(4)
-    cols = st.columns(4)
-    
-    for i, (idx, row) in enumerate(recent.iterrows()):
-        style = get_status_styles(row.get('status', 'Active'))
-        img_val = row.get('image', '')
-        
-        img_html = f'<div style="height:140px; background:#eee; border-radius:8px; margin-bottom:12px; overflow:hidden;">'
-        if img_val and str(img_val).startswith('data:image'):
-            img_html += f'<img src="{img_val}" style="width:100%; height:100%; object-fit:cover;">'
-        else:
-            img_html += '<div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#bbb; font-size:24px;">📷</div>'
-        img_html += '</div>'
-        
-        with cols[i]:
-            st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 420px; display: flex; flex-direction: column;">
-                    {img_html}
-                    <div style="font-size: 11px; color: #666; font-weight: bold;">📅 {row.get('timestamp', 'Just now')}</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 6px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size: 14px; color: #444; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px;">
-                        <span style="background-color: {style['hex']}; color: white; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
-                        <span style="font-size: 12px; font-weight: bold; color: #555;">✅ {row.get('verifications', 0)} Verified</span>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            if st.button(f"Verify #{i+1}", key=f"v_btn_{idx}"):
-                worksheet.update_cell(int(idx) + 2, 9, int(row.get('verifications', 0)) + 1)
-                st.cache_data.clear()
-                st.rerun()
-else:
-    st.info("No neighborhood signals found.")
+    with st.form("report_form", clear_on_submit=True):
+        st.subheader("New Signal")
+        n_name = st.text_input("Signal Name")
+        n_street = st.text_input("Address")
+        n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
+        n_size = st.number_input("Radius (meters)", min_value=1, value=50)
+        if st.form_submit_button("Send Signal"):
+            loc = safe_geocode(n_street)
+            if loc:
+                t_stamp = datetime.now().strftime("%m/%d/%Y %I:%M %p")
+                worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, t_stamp, "", 0])
+                st.cache_data
