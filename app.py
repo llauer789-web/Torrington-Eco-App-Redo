@@ -26,10 +26,10 @@ except Exception as e:
 def get_status_color(status):
     status = str(status).strip().capitalize()
     colors = {
-        "Urgent": [255, 0, 0, 160],   # Red
-        "Active": [255, 165, 0, 160], # Orange
-        "Watching": [255, 215, 0, 160], # Gold
-        "Resolved": [0, 128, 0, 160]   # Green
+        "Urgent": [255, 0, 0, 160],
+        "Active": [255, 165, 0, 160],
+        "Watching": [255, 215, 0, 160],
+        "Resolved": [0, 128, 0, 160]
     }
     return colors.get(status, [125, 125, 125, 160])
 
@@ -38,23 +38,29 @@ def load_data():
         data = worksheet.get_all_records()
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
-        # Clean headers: lowercase and replace spaces with underscores
+        # Clean headers
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
         
-        # Ensure coordinates are numbers
-        df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
-        df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
-        df = df.dropna(subset=['lat', 'lon'])
+        # Failsafe: Ensure critical columns exist so it never KeyErrors again
+        if 'lat' not in df.columns: df['lat'] = 41.8006
+        if 'lon' not in df.columns: df['lon'] = -73.1212
         
-        # Mapping Display Fields (using .get to prevent crashes if column is missing)
-        df['d_name'] = df.get('alert_name', 'Unnamed Alert')
-        df['d_status'] = df.get('status', 'Active')
-        df['d_street'] = df.get('street', 'Unknown Street')
-        df['d_time'] = df.get('timestamp', 'Recently')
+        df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
+        df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
+        
+        # Create Display Columns with fallbacks
+        df['d_name'] = df['alert_name'] if 'alert_name' in df.columns else (df['name'] if 'name' in df.columns else "Alert")
+        df['d_status'] = df['status'] if 'status' in df.columns else "Active"
+        df['d_street'] = df['street'] if 'street' in df.columns else "Torrington"
+        df['d_time'] = df['timestamp'] if 'timestamp' in df.columns else "Just now"
+        
         df['color'] = df['d_status'].apply(get_status_color)
-        df['radius'] = pd.to_numeric(df.get('radius', 250), errors='coerce').fillna(250)
+        df['radius'] = pd.to_numeric(df['radius'], errors='coerce').fillna(250) if 'radius' in df.columns else 250
+        
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.warning(f"Data sync issue: {e}")
+        return pd.DataFrame()
 
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="Torrington Eco-Pulse", layout="wide")
@@ -85,16 +91,16 @@ with st.sidebar:
     with tab2:
         st.subheader("New Alert")
         with st.form("alert_form", clear_on_submit=True):
-            n_name = st.text_input("Issue (e.g. Fallen Branch)")
+            n_name = st.text_input("Issue Name")
             n_street = st.text_input("Street Name")
             n_stat = st.selectbox("Status", ["Urgent", "Active", "Watching", "Resolved"])
             n_lat = st.number_input("Lat", value=41.8006, format="%.4f")
             n_lon = st.number_input("Lon", value=-73.1212, format="%.4f")
             
             if st.form_submit_button("Submit Alert"):
-                timestamp = datetime.now().strftime("%m/%d %I:%M %p")
-                # Order: Alert_Name, Status, Lat, Lon, Radius, Street, Timestamp
-                worksheet.append_row([n_name, n_stat, n_lat, n_lon, 250, n_street, timestamp])
+                t_stamp = datetime.now().strftime("%I:%M %p")
+                # Order: Alert Name, Status, Lat, Lon, Radius, Street, Timestamp
+                worksheet.append_row([n_name, n_stat, n_lat, n_lon, 250, n_street, t_stamp])
                 st.session_state.alerts_df = load_data()
                 st.success("Alert Saved!")
                 st.rerun()
@@ -115,29 +121,26 @@ layer = pdk.Layer(
 )
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer]))
 
-# --- 6. RECENT ALERTS FEED (The Big Update) ---
+# --- 6. RECENT ALERTS FEED ---
 st.divider()
-st.subheader("📍 Recent Alerts Feed")
+st.subheader("📍 Recent Activity")
 
 if not df_map.empty:
-    # Get the 4 most recent alerts
     recent_items = df_map.iloc[::-1].head(4)
     cols = st.columns(4)
     
     for i, (index, row) in enumerate(recent_items.iterrows()):
-        stat = row['d_status']
-        # Set border and text color based on status
+        stat = str(row['d_status'])
         border_clr = "#D32F2F" if stat == "Urgent" else "#EF6C00" if stat == "Active" else "#FBC02D" if stat == "Watching" else "#2E7D32"
-        bg_clr = "#FFF5F5" if stat == "Urgent" else "#FFFFFF"
         
         with cols[i]:
             st.markdown(f"""
-                <div style="border: 1px solid #ddd; border-left: 8px solid {border_clr}; padding: 15px; border-radius: 10px; background-color: {bg_clr}; min-height: 150px;">
-                    <div style="font-size: 12px; color: #666; font-weight: bold; text-transform: uppercase;">{row['d_time']}</div>
-                    <div style="font-size: 18px; font-weight: 800; color: #111; margin-top: 5px;">{row['d_name']}</div>
-                    <div style="font-size: 14px; color: #444; margin-bottom: 10px;">📍 {row['d_street']}</div>
-                    <span style="background-color: {border_clr}; color: white; padding: 3px 10px; border-radius: 15px; font-size: 12px; font-weight: bold;">{stat}</span>
+                <div style="border-left: 8px solid {border_clr}; padding: 12px; border: 1px solid #eee; border-left: 8px solid {border_clr}; border-radius: 10px; background: white;">
+                    <small style="color: gray;">{row['d_time']}</small>
+                    <h4 style="margin: 0; color: black;">{row['d_name']}</h4>
+                    <p style="margin: 0; color: #444;">📍 {row['d_street']}</p>
+                    <strong style="color: {border_clr};">{stat}</strong>
                 </div>
             """, unsafe_allow_html=True)
 else:
-    st.write("No alerts reported yet.")
+    st.info("Awaiting first alert report...")
