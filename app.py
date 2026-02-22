@@ -2,12 +2,15 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import gspread
+import base64 # New: For handling image data
+from io import BytesIO
+from PIL import Image
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="localsignal_pulse") # Updated agent name
+geolocator = Nominatim(user_agent="localsignal_pulse")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -20,7 +23,7 @@ try:
 except Exception as e:
     st.error(f"Connection Error: {e}")
 
-# --- 2. THE COLOR SYSTEM (Keeping your vibrant styles) ---
+# --- 2. COLOR & IMAGE HELPERS ---
 def get_status_styles(status):
     status = str(status).strip().capitalize()
     styles = {
@@ -30,6 +33,17 @@ def get_status_styles(status):
         "Resolved":{"map": [46, 125, 50, 180], "hex": "#2E7D32", "bg": "#F1F8E9"}
     }
     return styles.get(status, {"map": [100, 100, 100, 180], "hex": "#666666", "bg": "#F5F5F5"})
+
+# New: Function to shrink and encode images for the Google Sheet
+def process_image(uploaded_file):
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file)
+        img.thumbnail((400, 400)) # Keep it small for Google Sheets
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG", quality=70)
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return f"data:image/jpeg;base64,{img_str}"
+    return ""
 
 # --- 3. DATA LOADING ---
 def load_data():
@@ -45,24 +59,28 @@ def load_data():
     except: return pd.DataFrame()
 
 # --- 4. INITIALIZATION ---
-st.set_page_config(page_title="LocalSignal", layout="wide") # Updated Page Title
+st.set_page_config(page_title="LocalSignal", layout="wide")
 if 'map_center' not in st.session_state:
     st.session_state.map_center = {"lat": 41.8006, "lon": -73.1212}
 
-# --- 5. SIDEBAR (LocalSignal Sidebar) ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
-    st.title("📡 LocalSignal") # Updated Branding
+    st.title("📡 LocalSignal")
     tab1, tab2 = st.tabs(["📢 Report", "💬 Chat"])
 
     with tab1:
-        st.subheader("New Signal") # Updated Context
+        st.subheader("New Signal")
         with st.form("report_form", clear_on_submit=True):
-            n_name = st.text_input("Signal Name", placeholder="e.g. Fallen Tree")
-            n_street = st.text_input("Address/Street", placeholder="e.g. 50 Main St")
+            n_name = st.text_input("Signal Name")
+            n_street = st.text_input("Address/Street")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
             n_size = st.select_slider("Signal Radius", options=[50, 100, 250, 500, 1000], value=250)
             
-            if st.form_submit_button("Send Signal"): # Updated Button Text
+            # PHOTO UPLOAD ADDITION
+            n_photo = st.file_uploader("Upload a Photo", type=['jpg', 'jpeg', 'png'])
+            
+            if st.form_submit_button("Send Signal"):
+                img_data = process_image(n_photo) # Convert image to text
                 try:
                     location = geolocator.geocode(f"{n_street}, Torrington, CT")
                     f_lat = location.latitude if location else st.session_state.map_center["lat"]
@@ -71,19 +89,19 @@ with st.sidebar:
                     f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
 
                 t_stamp = datetime.now().strftime("%I:%M %p")
-                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp])
-                st.success("Signal Sent!")
+                # Add to Sheet: Name, Status, Lat, Lon, Radius, Street, Time, Image
+                worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp, img_data])
+                st.success("Signal Sent with Photo!")
                 st.rerun()
 
     with tab2:
-        st.subheader("Community Chat")
         u_msg = st.text_input("Message")
         if st.button("Send Message"):
             chat_worksheet.append_row([datetime.now().strftime("%H:%M"), "Guest", u_msg])
             st.rerun()
 
 # --- 6. MAIN UI ---
-st.title("🌍 LocalSignal Live Map") # Updated Main Header
+st.title("🌍 LocalSignal Live Map")
 df_map = load_data()
 
 view_state = pdk.ViewState(latitude=41.8006, longitude=-73.1212, zoom=13)
@@ -97,9 +115,9 @@ layer = pdk.Layer(
 
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer], tooltip={"text": "{alert_name}\nStatus: {status}"}))
 
-# --- 7. RECENT ALERTS ---
+# --- 7. RECENT ALERTS (With Image Display) ---
 st.divider()
-st.subheader("📍 Recent Signals") # Updated Header
+st.subheader("📍 Recent Signals")
 
 if not df_map.empty:
     recent_items = df_map.iloc[::-1].head(4)
@@ -107,9 +125,15 @@ if not df_map.empty:
     
     for i, (idx, row) in enumerate(recent_items.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
+        img_html = ""
+        # Check if an image exists for this row
+        if row.get('image') and str(row['image']).startswith('data:image'):
+            img_html = f'<img src="{row["image"]}" style="width:100%; border-radius:5px; margin-bottom:10px;">'
+        
         with cols[i]:
             st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 140px;">
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']};">
+                    {img_html}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
                     <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
                     <div style="font-size: 14px; color: #333; margin-bottom: 8px;">📍 {row.get('street', 'Torrington')}</div>
