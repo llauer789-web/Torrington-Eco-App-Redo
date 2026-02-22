@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import gspread
-import base64 # New: For handling image data
+import base64
 from io import BytesIO
 from PIL import Image
 from google.oauth2.service_account import Credentials
@@ -34,11 +34,10 @@ def get_status_styles(status):
     }
     return styles.get(status, {"map": [100, 100, 100, 180], "hex": "#666666", "bg": "#F5F5F5"})
 
-# New: Function to shrink and encode images for the Google Sheet
 def process_image(uploaded_file):
     if uploaded_file is not None:
         img = Image.open(uploaded_file)
-        img.thumbnail((400, 400)) # Keep it small for Google Sheets
+        img.thumbnail((400, 400)) 
         buffered = BytesIO()
         img.save(buffered, format="JPEG", quality=70)
         img_str = base64.b64encode(buffered.getvalue()).decode()
@@ -75,12 +74,10 @@ with st.sidebar:
             n_street = st.text_input("Address/Street")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
             n_size = st.select_slider("Signal Radius", options=[50, 100, 250, 500, 1000], value=250)
-            
-            # PHOTO UPLOAD ADDITION
             n_photo = st.file_uploader("Upload a Photo", type=['jpg', 'jpeg', 'png'])
             
             if st.form_submit_button("Send Signal"):
-                img_data = process_image(n_photo) # Convert image to text
+                img_data = process_image(n_photo)
                 try:
                     location = geolocator.geocode(f"{n_street}, Torrington, CT")
                     f_lat = location.latitude if location else st.session_state.map_center["lat"]
@@ -89,9 +86,8 @@ with st.sidebar:
                     f_lat, f_lon = st.session_state.map_center["lat"], st.session_state.map_center["lon"]
 
                 t_stamp = datetime.now().strftime("%I:%M %p")
-                # Add to Sheet: Name, Status, Lat, Lon, Radius, Street, Time, Image
                 worksheet.append_row([n_name, n_stat, f_lat, f_lon, n_size, n_street, t_stamp, img_data])
-                st.success("Signal Sent with Photo!")
+                st.success("Signal Sent!")
                 st.rerun()
 
     with tab2:
@@ -115,7 +111,7 @@ layer = pdk.Layer(
 
 st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=view_state, layers=[layer], tooltip={"text": "{alert_name}\nStatus: {status}"}))
 
-# --- 7. RECENT ALERTS (With Image Display) ---
+# --- 7. RECENT ALERTS (Restored to "Better State") ---
 st.divider()
 st.subheader("📍 Recent Signals")
 
@@ -125,18 +121,22 @@ if not df_map.empty:
     
     for i, (idx, row) in enumerate(recent_items.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
-        img_html = ""
-        # Check if an image exists for this row
-        if row.get('image') and str(row['image']).startswith('data:image'):
-            img_html = f'<img src="{row["image"]}" style="width:100%; border-radius:5px; margin-bottom:10px;">'
+        
+        # Image Logic: Fixed height to keep cards uniform
+        img_val = row.get('image', '')
+        if img_val and str(img_val).startswith('data:image'):
+            img_html = f'<div style="height: 120px; overflow: hidden; border-radius: 5px; margin-bottom: 10px;"><img src="{img_val}" style="width: 100%; height: 100%; object-fit: cover;"></div>'
+        else:
+            # Placeholder to keep card heights equal even without image
+            img_html = '<div style="height: 120px; background: #eee; border-radius: 5px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 24px;">📷</div>'
         
         with cols[i]:
             st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']};">
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 320px; display: flex; flex-direction: column;">
                     {img_html}
                     <div style="font-size: 11px; color: #666; font-weight: bold;">{row.get('timestamp', 'Just now')}</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size: 14px; color: #333; margin-bottom: 8px;">📍 {row.get('street', 'Torrington')}</div>
-                    <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0; flex-grow: 0;">{row.get('alert_name', 'Alert')}</div>
+                    <div style="font-size: 14px; color: #333; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
+                    <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; width: fit-content;">{row.get('status', 'Active').upper()}</span>
                 </div>
             """, unsafe_allow_html=True)
