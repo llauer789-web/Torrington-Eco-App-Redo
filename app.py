@@ -11,7 +11,7 @@ from datetime import datetime
 from geopy.geocoders import Nominatim
 
 # --- 1. SETUP & CONNECTION ---
-geolocator = Nominatim(user_agent="localsignal_usa_v5")
+geolocator = Nominatim(user_agent="localsignal_usa_v6")
 
 try:
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -32,7 +32,6 @@ def load_data():
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         df.columns = [str(c).strip().replace(" ", "_").lower() for c in df.columns]
-        # Force conversion to numbers for map rendering
         df['lat'] = pd.to_numeric(df['lat'], errors='coerce').fillna(41.8006)
         df['lon'] = pd.to_numeric(df['lon'], errors='coerce').fillna(-73.1212)
         df['radius'] = pd.to_numeric(df.get('radius', 50), errors='coerce').fillna(50)
@@ -59,6 +58,15 @@ def get_status_styles(status):
     }
     return styles.get(status, {"map": [100, 100, 100], "hex": "#666666", "bg": "#F5F5F5"})
 
+def process_image(uploaded_file):
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file)
+        img.thumbnail((400, 400)) 
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG", quality=70)
+        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+    return ""
+
 # --- 3. INITIALIZATION ---
 st.set_page_config(page_title="LocalSignal USA", layout="wide")
 current_zip = st.query_params.get("zip", "")
@@ -70,7 +78,7 @@ df_all = load_data()
 # --- 4. SIDEBAR ---
 with st.sidebar:
     st.title("📡 LocalSignal USA")
-    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="e.g. 06790")
+    user_zip = st.text_input("Neighborhood Zip", value=current_zip, placeholder="06790")
     
     if user_zip != current_zip:
         st.query_params["zip"] = user_zip
@@ -86,8 +94,8 @@ with st.sidebar:
             if zip_loc:
                 st.session_state.map_center = {"lat": zip_loc.latitude, "lon": zip_loc.longitude}
                 df_filtered = df_all[
-                    (df_all['lat'].between(zip_loc.latitude - 0.2, zip_loc.latitude + 0.2)) &
-                    (df_all['lon'].between(zip_loc.longitude - 0.2, zip_loc.longitude + 0.2))
+                    (df_all['lat'].between(zip_loc.latitude - 0.15, zip_loc.latitude + 0.15)) &
+                    (df_all['lon'].between(zip_loc.longitude - 0.15, zip_loc.longitude + 0.15))
                 ].copy()
         except: pass
 
@@ -95,75 +103,78 @@ with st.sidebar:
     with tab1:
         with st.form("report_form", clear_on_submit=True):
             n_name = st.text_input("Signal Name")
-            n_street = st.text_input("Address", placeholder="Include Zip Code")
+            n_street = st.text_input("Address", placeholder="Include Zip")
             n_stat = st.selectbox("Urgency", ["Urgent", "Active", "Watching", "Resolved"])
-            n_size = st.number_input("Signal Radius (meters)", min_value=1, max_value=2000, value=50, step=5)
+            n_size = st.number_input("Signal Radius (meters)", min_value=1, max_value=2000, value=50, step=1)
             n_photo = st.file_uploader("Upload Photo", type=['jpg', 'png'])
             if st.form_submit_button("Send Signal"):
-                img_data = "" # Insert photo logic here
+                img_data = process_image(n_photo)
                 loc = geolocator.geocode(n_street, country_codes="us")
                 if loc:
-                    worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, datetime.now().strftime("%I:%M %p"), img_data, 0])
+                    t_stamp = datetime.now().strftime("%m/%d/%Y %I:%M %p")
+                    worksheet.append_row([n_name, n_stat, loc.latitude, loc.longitude, n_size, n_street, t_stamp, img_data, 0])
                     st.cache_data.clear()
-                    st.success("Signal Sent!")
                     st.rerun()
 
-# --- 5. MAIN MAP (Circles Fixed) ---
+# --- 5. MAIN MAP ---
 st.title(f"🌍 LocalSignal: {user_zip if user_zip else 'USA'}")
 layers = []
 
-# FEATURE: Zip Boundary
 if boundary_data:
     layers.append(pdk.Layer("GeoJsonLayer", boundary_data, opacity=0.1, stroked=True, filled=True, get_fill_color=[0, 150, 255, 30], get_line_color=[0, 100, 255, 200], line_width_min_pixels=2))
 
-# FEATURE: Visible Circles with Proper Units
 if not df_filtered.empty:
-    # Adding a color column with alpha (opacity)
     df_filtered['color'] = df_filtered.apply(lambda r: get_status_styles(r['status'])['map'] + [180], axis=1)
-    
     layers.append(pdk.Layer(
         "ScatterplotLayer",
         df_filtered,
         get_position='[lon, lat]',
         get_color="color",
         get_radius="radius",
-        radius_units="'meters'", # This ensures they scale correctly when zooming
-        pickable=True,
-        opacity=0.8,
-        filled=True
+        radius_units="'meters'",
+        pickable=True
     ))
 
-st.pydeck_chart(pdk.Deck(
-    map_style='light',
-    initial_view_state=pdk.ViewState(
-        latitude=st.session_state.map_center["lat"], 
-        longitude=st.session_state.map_center["lon"], 
-        zoom=13
-    ),
-    layers=layers,
-    tooltip={"text": "{alert_name}\nStatus: {status}\nTime: {timestamp}"}
-))
+st.pydeck_chart(pdk.Deck(map_style='light', initial_view_state=pdk.ViewState(latitude=st.session_state.map_center["lat"], longitude=st.session_state.map_center["lon"], zoom=13), layers=layers))
 
-# --- 6. RECENT SIGNALS ---
+# --- 6. RECENT SIGNALS (RE-RESTORED) ---
 st.divider()
+st.subheader(f"📍 Recent Neighborhood Signals {user_zip}")
+
 if not df_filtered.empty:
+    # Sort by the spreadsheet order (most recent at bottom of sheet = top of app)
     recent = df_filtered.iloc[::-1].head(4)
     cols = st.columns(4)
+    
     for i, (idx, row) in enumerate(recent.iterrows()):
         style = get_status_styles(row.get('status', 'Active'))
+        img_val = row.get('image', '')
+        
+        # Build image HTML
+        img_html = f'<div style="height:140px; background:#eee; border-radius:8px; margin-bottom:12px; overflow:hidden;">'
+        if img_val and str(img_val).startswith('data:image'):
+            img_html += f'<img src="{img_val}" style="width:100%; height:100%; object-fit:cover;">'
+        else:
+            img_html += '<div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#bbb; font-size:24px;">📷</div>'
+        img_html += '</div>'
+        
         with cols[i]:
             st.markdown(f"""
-                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 250px;">
-                    <div style="font-size: 11px; color: #666; font-weight: bold;">🕒 {row.get('timestamp', 'Just now')}</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 4px 0;">{row.get('alert_name', 'Alert')}</div>
-                    <div style="font-size: 14px; color: #333; margin-bottom: 8px;">📍 {row.get('street', 'Local Area')}</div>
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="background-color: {style['hex']}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
-                        <span style="font-size: 12px; color: #555;">✅ {row.get('verifications', 0)} Verified</span>
+                <div style="border-left: 8px solid {style['hex']}; padding: 15px; border: 1px solid #ddd; border-radius: 10px; background-color: {style['bg']}; min-height: 420px; display: flex; flex-direction: column;">
+                    {img_html}
+                    <div style="font-size: 11px; color: #666; font-weight: bold;">📅 {row.get('timestamp', 'Just now')}</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #111; margin: 6px 0;">{row.get('alert_name', 'Alert')}</div>
+                    <div style="font-size: 14px; color: #444; margin-bottom: 8px; flex-grow: 1;">📍 {row.get('street', 'Local Area')}</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px;">
+                        <span style="background-color: {style['hex']}; color: white; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: bold;">{row.get('status', 'Active').upper()}</span>
+                        <span style="font-size: 12px; font-weight: bold; color: #555;">✅ {row.get('verifications', 0)} Verified</span>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            if st.button(f"Verify #{i+1}", key=f"v_{idx}"):
+            
+            if st.button(f"Verify Signal #{i+1}", key=f"v_btn_{idx}"):
                 worksheet.update_cell(int(idx) + 2, 9, int(row.get('verifications', 0)) + 1)
                 st.cache_data.clear()
                 st.rerun()
+else:
+    st.info("No active neighborhood signals.")
